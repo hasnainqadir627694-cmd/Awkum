@@ -1,0 +1,52 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Diagnostics Probe Collection (Used by ClassHub Health Check)
+    match /_health_checks/{document=**} {
+      allow read, write: if true;
+    }
+
+    // 2. Student Submissions & Turn-Ins
+    match /submissions/{submissionId} {
+      allow read, create, update: if true;
+    }
+
+    // 3. Course Materials, Subjects, Schedules & Notices (Public Read for Students)
+    match /subjects/{subjectId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    match /documents/{documentId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    match /schedules/{scheduleId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    match /notices/{noticeId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // 4. Student Profiles & Attendance Records
+    match /students/{studentId} {
+      allow read, write: if true;
+    }
+
+    match /attendance/{attendanceId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // 5. Open Development Fallback (Permits all reads & writes during active testing)
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

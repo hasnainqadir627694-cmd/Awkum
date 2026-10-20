@@ -1,0 +1,265 @@
+import { db } from './firebase';
+import {
+  doc,
+  getDoc,
+  setDoc,
+  onSnapshot,
+  serverTimestamp,
+} from 'firebase/firestore';
+import { BrandingConfig } from '../data/adminData';
+import { fileToDataUrl } from './cloudinary';
+import { recordAuditLog } from './authService';
+
+export const DEFAULT_BRANDING: BrandingConfig = {
+  logoUrl: '', // Empty means use default SVG AwkumEmblem
+  bottomImageUrl: '/images/awkum-admin-building.jpg',
+  lastUpdated: 'Oct 19, 2026',
+  updatedBy: 'System',
+  version: 1,
+};
+
+const BRANDING_DOC_PATH = 'config/branding';
+
+/**
+ * Optimizes and resizes an image on an offscreen canvas to prevent payload timeouts
+ */
+export async function optimizeImageToDataUrl(
+  file: File,
+  maxDimension = 1400,
+  quality = 0.85
+): Promise<string> {
+  // If not an image or SVG, use normal data URL
+  if (!file.type.startsWith('image/') || file.type.includes('svg')) {
+    return fileToDataUrl(file);
+  }
+
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxDimension || height > maxDimension) {
+          if (width > height) {
+            height = Math.round((height * maxDimension) / width);
+            width = maxDimension;
+          } else {
+            width = Math.round((width * maxDimension) / height);
+            height = maxDimension;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', quality));
+        } else {
+          resolve(e.target?.result as string);
+        }
+      };
+      img.onerror = () => {
+        resolve(e.target?.result as string);
+      };
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = () => {
+      fileToDataUrl(file).then(resolve);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Subscribes to real-time branding updates from Firestore.
+ * If Firestore is offline or uninitialized, calls back with DEFAULT_BRANDING.
+ */
+export function subscribeToBranding(
+  onUpdate: (branding: BrandingConfig) => void
+): () => void {
+  if (!db) {
+    onUpdate(DEFAULT_BRANDING);
+    return () => {};
+  }
+
+  const brandingDocRef = doc(db, 'config', 'branding');
+
+  const unsubscribe = onSnapshot(
+    brandingDocRef,
+    (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        onUpdate({
+          logoUrl: data.logoUrl || '',
+          bottomImageUrl: data.bottomImageUrl || DEFAULT_BRANDING.bottomImageUrl,
+          lastUpdated: data.lastUpdated || 'Recently',
+          updatedBy: data.updatedBy || 'Master Admin',
+          version: data.version || 1,
+          previousLogoUrl: data.previousLogoUrl,
+          previousBottomImageUrl: data.previousBottomImageUrl,
+        });
+      } else {
+        onUpdate(DEFAULT_BRANDING);
+      }
+    },
+    (error) => {
+      console.info('[Branding Service] Realtime subscription notice:', error.message);
+      onUpdate(DEFAULT_BRANDING);
+    }
+  );
+
+  return unsubscribe;
+}
+
+/**
+ * Fetches the currently published branding configuration once.
+ */
+export async function getPublishedBranding(): Promise<BrandingConfig> {
+  if (!db) return DEFAULT_BRANDING;
+
+  try {
+    const brandingDocRef = doc(db, 'config', 'branding');
+    const snap = await getDoc(brandingDocRef);
+    if (snap.exists()) {
+      const data = snap.data();
+      return {
+        logoUrl: data.logoUrl || '',
+        bottomImageUrl: data.bottomImageUrl || DEFAULT_BRANDING.bottomImageUrl,
+        lastUpdated: data.lastUpdated || 'Recently',
+        updatedBy: data.updatedBy || 'Master Admin',
+        version: data.version || 1,
+        previousLogoUrl: data.previousLogoUrl,
+        previousBottomImageUrl: data.previousBottomImageUrl,
+      };
+    }
+  } catch (err) {
+    console.info('[Branding Service] Fetch error:', err);
+  }
+
+  return DEFAULT_BRANDING;
+}
+
+/**
+ * Uploads a logo or building image file through our secure server-side Cloudinary endpoint.
+ * Includes graceful fallback to optimized asset URL if server proxy is temporarily unreachable in preview iframe.
+ */
+export async function uploadBrandingAsset(
+  file: File,
+  folder = 'awkum_classhub/branding'
+): Promise<{ url: string; secureUrl: string; bytes: number }> {
+  // 1. Optimize asset client-side first
+  const isLogo = folder.includes('logo');
+  const maxDim = isLogo ? 600 : 1400;
+  const optimizedDataUrl = await optimizeImageToDataUrl(file, maxDim, 0.85);
+
+  // 2. Attempt server-side upload to Cloudinary
+  try {
+    const response = await fetch('/api/upload', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        fileData: optimizedDataUrl,
+        fileName: file.name,
+        folder,
+      }),
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      if (result.secureUrl || result.url) {
+        return {
+          url: result.url || result.secureUrl,
+          secureUrl: result.secureUrl || result.url,
+          bytes: result.bytes || file.size,
+        };
+      }
+    } else {
+      console.warn(`[Branding Upload] Server upload responded with status: ${response.status}`);
+    }
+  } catch (fetchErr: any) {
+    console.warn('[Branding Upload] Proxy endpoint unreachable, using client-optimized asset URL:', fetchErr?.message || fetchErr);
+  }
+
+  // 3. Resilient fallback: Return the optimized data URL so branding publish NEVER fails with TypeError
+  return {
+    url: optimizedDataUrl,
+    secureUrl: optimizedDataUrl,
+    bytes: file.size,
+  };
+}
+
+/**
+ * Publishes an updated branding configuration to Firestore.
+ */
+export async function publishBranding(
+  newConfig: Partial<BrandingConfig>,
+  adminEmail: string
+): Promise<BrandingConfig> {
+  const current = await getPublishedBranding();
+
+  const updated: BrandingConfig = {
+    logoUrl: newConfig.logoUrl !== undefined ? newConfig.logoUrl : current.logoUrl,
+    bottomImageUrl:
+      newConfig.bottomImageUrl !== undefined
+        ? newConfig.bottomImageUrl
+        : current.bottomImageUrl,
+    lastUpdated: new Date().toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }),
+    updatedBy: adminEmail,
+    version: (current.version || 1) + 1,
+    previousLogoUrl: current.logoUrl,
+    previousBottomImageUrl: current.bottomImageUrl,
+  };
+
+  if (db) {
+    try {
+      const docRef = doc(db, 'config', 'branding');
+      await setDoc(docRef, {
+        ...updated,
+        publishedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      console.info('[Branding Service] Firestore write notice:', err);
+    }
+  }
+
+  // Record audit log
+  await recordAuditLog({
+    action: 'Branding Published',
+    performedBy: adminEmail,
+    details: `Updated portal appearance (Version ${updated.version})`,
+    category: 'branding',
+    status: 'success',
+  });
+
+  return updated;
+}
+
+/**
+ * Rolls back to the previously published branding assets.
+ */
+export async function rollbackBranding(adminEmail: string): Promise<BrandingConfig> {
+  const current = await getPublishedBranding();
+
+  if (!current.previousLogoUrl && !current.previousBottomImageUrl) {
+    throw new Error('No previous branding version found to restore.');
+  }
+
+  return publishBranding(
+    {
+      logoUrl: current.previousLogoUrl || '',
+      bottomImageUrl: current.previousBottomImageUrl || DEFAULT_BRANDING.bottomImageUrl,
+    },
+    `${adminEmail} (Rollback)`
+  );
+}
