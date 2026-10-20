@@ -12,7 +12,12 @@ import { recordAuditLog } from './authService';
 
 export const DEFAULT_BRANDING: BrandingConfig = {
   logoUrl: '', // Empty means use default SVG AwkumEmblem
-  bottomImageUrl: '/images/awkum-admin-building.jpg',
+  bottomImageUrl: '',
+  bottomImageEnabled: true,
+  bottomImageScale: 100,
+  bgImageUrl: '',
+  bgImageEnabled: false,
+  bgImageScale: 100,
   lastUpdated: 'Oct 19, 2026',
   updatedBy: 'System',
   version: 1,
@@ -96,11 +101,21 @@ export function subscribeToBranding(
         onUpdate({
           logoUrl: data.logoUrl || '',
           bottomImageUrl: data.bottomImageUrl || DEFAULT_BRANDING.bottomImageUrl,
+          bottomImageEnabled: data.bottomImageEnabled !== undefined ? data.bottomImageEnabled : true,
+          bottomImageScale: data.bottomImageScale !== undefined ? data.bottomImageScale : 100,
+          bgImageUrl: data.bgImageUrl || '',
+          bgImageEnabled: data.bgImageEnabled !== undefined ? data.bgImageEnabled : false,
+          bgImageScale: data.bgImageScale !== undefined ? data.bgImageScale : 100,
           lastUpdated: data.lastUpdated || 'Recently',
           updatedBy: data.updatedBy || 'Master Admin',
           version: data.version || 1,
           previousLogoUrl: data.previousLogoUrl,
           previousBottomImageUrl: data.previousBottomImageUrl,
+          previousBottomImageEnabled: data.previousBottomImageEnabled,
+          previousBottomImageScale: data.previousBottomImageScale,
+          previousBgImageUrl: data.previousBgImageUrl,
+          previousBgImageEnabled: data.previousBgImageEnabled,
+          previousBgImageScale: data.previousBgImageScale,
         });
       } else {
         onUpdate(DEFAULT_BRANDING);
@@ -129,11 +144,21 @@ export async function getPublishedBranding(): Promise<BrandingConfig> {
       return {
         logoUrl: data.logoUrl || '',
         bottomImageUrl: data.bottomImageUrl || DEFAULT_BRANDING.bottomImageUrl,
+        bottomImageEnabled: data.bottomImageEnabled !== undefined ? data.bottomImageEnabled : true,
+        bottomImageScale: data.bottomImageScale !== undefined ? data.bottomImageScale : 100,
+        bgImageUrl: data.bgImageUrl || '',
+        bgImageEnabled: data.bgImageEnabled !== undefined ? data.bgImageEnabled : false,
+        bgImageScale: data.bgImageScale !== undefined ? data.bgImageScale : 100,
         lastUpdated: data.lastUpdated || 'Recently',
         updatedBy: data.updatedBy || 'Master Admin',
         version: data.version || 1,
         previousLogoUrl: data.previousLogoUrl,
         previousBottomImageUrl: data.previousBottomImageUrl,
+        previousBottomImageEnabled: data.previousBottomImageEnabled,
+        previousBottomImageScale: data.previousBottomImageScale,
+        previousBgImageUrl: data.previousBgImageUrl,
+        previousBgImageEnabled: data.previousBgImageEnabled,
+        previousBgImageScale: data.previousBgImageScale,
       };
     }
   } catch (err) {
@@ -210,6 +235,23 @@ export async function publishBranding(
       newConfig.bottomImageUrl !== undefined
         ? newConfig.bottomImageUrl
         : current.bottomImageUrl,
+    bottomImageEnabled:
+      newConfig.bottomImageEnabled !== undefined
+        ? newConfig.bottomImageEnabled
+        : current.bottomImageEnabled,
+    bottomImageScale:
+      newConfig.bottomImageScale !== undefined
+        ? newConfig.bottomImageScale
+        : current.bottomImageScale,
+    bgImageUrl: newConfig.bgImageUrl !== undefined ? newConfig.bgImageUrl : current.bgImageUrl,
+    bgImageEnabled:
+      newConfig.bgImageEnabled !== undefined
+        ? newConfig.bgImageEnabled
+        : current.bgImageEnabled,
+    bgImageScale:
+      newConfig.bgImageScale !== undefined
+        ? newConfig.bgImageScale
+        : current.bgImageScale,
     lastUpdated: new Date().toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
@@ -219,6 +261,11 @@ export async function publishBranding(
     version: (current.version || 1) + 1,
     previousLogoUrl: current.logoUrl,
     previousBottomImageUrl: current.bottomImageUrl,
+    previousBottomImageEnabled: current.bottomImageEnabled,
+    previousBottomImageScale: current.bottomImageScale,
+    previousBgImageUrl: current.bgImageUrl,
+    previousBgImageEnabled: current.bgImageEnabled,
+    previousBgImageScale: current.bgImageScale,
   };
 
   if (db) {
@@ -251,7 +298,7 @@ export async function publishBranding(
 export async function rollbackBranding(adminEmail: string): Promise<BrandingConfig> {
   const current = await getPublishedBranding();
 
-  if (!current.previousLogoUrl && !current.previousBottomImageUrl) {
+  if (!current.previousLogoUrl && !current.previousBottomImageUrl && !current.previousBgImageUrl) {
     throw new Error('No previous branding version found to restore.');
   }
 
@@ -259,6 +306,8 @@ export async function rollbackBranding(adminEmail: string): Promise<BrandingConf
     {
       logoUrl: current.previousLogoUrl || '',
       bottomImageUrl: current.previousBottomImageUrl || DEFAULT_BRANDING.bottomImageUrl,
+      bgImageUrl: current.previousBgImageUrl || '',
+      bgImageEnabled: current.previousBgImageEnabled !== undefined ? current.previousBgImageEnabled : false,
     },
     `${adminEmail} (Rollback)`
   );

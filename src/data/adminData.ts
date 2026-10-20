@@ -62,16 +62,31 @@ export interface AnnouncementItem {
 export interface BrandingConfig {
   logoUrl: string;
   bottomImageUrl: string;
+  bottomImageEnabled?: boolean;
+  bottomImageScale?: number;
+  bgImageUrl?: string;
+  bgImageEnabled?: boolean;
+  bgImageScale?: number;
   lastUpdated: string;
   updatedBy: string;
   version: number;
   previousLogoUrl?: string;
   previousBottomImageUrl?: string;
+  previousBottomImageEnabled?: boolean;
+  previousBottomImageScale?: number;
+  previousBgImageUrl?: string;
+  previousBgImageEnabled?: boolean;
+  previousBgImageScale?: number;
 }
 
 export const DEFAULT_BRANDING: BrandingConfig = {
   logoUrl: '',
-  bottomImageUrl: '/images/awkum-admin-building.jpg',
+  bottomImageUrl: '',
+  bottomImageEnabled: true,
+  bottomImageScale: 100,
+  bgImageUrl: '',
+  bgImageEnabled: false,
+  bgImageScale: 100,
   lastUpdated: 'Oct 19, 2026',
   updatedBy: 'System',
   version: 1,

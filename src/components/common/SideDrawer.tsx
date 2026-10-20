@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Bell,
   User,
@@ -11,11 +11,13 @@ import {
   ShieldCheck,
   ChevronRight,
   Sparkles,
+  Download,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AwkumEmblem } from './AwkumLogo';
 import { StudentProfile } from '../../data/portalData';
 import { TabType } from './BottomNav';
+import { PWAInstallModal } from './PWAInstallModal';
 
 interface SideDrawerProps {
   isOpen: boolean;
@@ -42,6 +44,8 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
   onOpenHelp,
   onLogout,
 }) => {
+  const [showInstallModal, setShowInstallModal] = useState(false);
+
   return (
     <AnimatePresence>
       {isOpen && (
@@ -215,8 +219,34 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
                     </div>
                     <ChevronRight className="w-4 h-4 text-[#806A56]" />
                   </motion.button>
+
+                  <motion.button
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => {
+                      setShowInstallModal(true);
+                    }}
+                    className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-[#38271C] hover:bg-[#F3E9DD] transition-colors bg-[#EFE3D3]/40 border border-[#E6D8C7]"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="p-1.5 rounded-lg bg-[#493222] text-[#FFF9F1]">
+                        <Download className="w-4 h-4" />
+                      </div>
+                      <div className="text-left">
+                        <span className="block font-bold">Download Mobile App</span>
+                        <span className="text-[10px] text-[#806A56]">Install PWA on phone / home screen</span>
+                      </div>
+                    </div>
+                    <span className="text-[10px] bg-[#EAF2E9] text-[#668064] px-2 py-0.5 rounded-full font-bold">
+                      Ready
+                    </span>
+                  </motion.button>
                 </div>
               </div>
+
+              <PWAInstallModal
+                isOpen={showInstallModal}
+                onClose={() => setShowInstallModal(false)}
+              />
 
               {/* SECTION 3: UNIVERSITY SUPPORT CONTACTS CARD */}
               <div className="p-3 bg-white border border-[#E6D8C7] rounded-2xl shadow-xs space-y-2">

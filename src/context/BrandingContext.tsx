@@ -6,13 +6,23 @@ interface BrandingContextType {
   branding: BrandingConfig;
   logoUrl: string;
   bottomImageUrl: string;
+  bottomImageEnabled: boolean;
+  bottomImageScale: number;
+  bgImageUrl: string;
+  bgImageEnabled: boolean;
+  bgImageScale: number;
   updateBrandingState: (newBranding: Partial<BrandingConfig>) => void;
 }
 
 const BrandingContext = createContext<BrandingContextType>({
   branding: DEFAULT_BRANDING,
   logoUrl: '',
-  bottomImageUrl: DEFAULT_BRANDING.bottomImageUrl || '/images/awkum-admin-building.jpg',
+  bottomImageUrl: DEFAULT_BRANDING.bottomImageUrl || '',
+  bottomImageEnabled: true,
+  bottomImageScale: 100,
+  bgImageUrl: '',
+  bgImageEnabled: false,
+  bgImageScale: 100,
   updateBrandingState: () => {},
 });
 
@@ -45,7 +55,12 @@ export const BrandingProvider: React.FC<{ children: ReactNode }> = ({ children }
       value={{
         branding,
         logoUrl: branding.logoUrl || '',
-        bottomImageUrl: branding.bottomImageUrl || '/images/awkum-admin-building.jpg',
+        bottomImageUrl: branding.bottomImageUrl || '',
+        bottomImageEnabled: branding.bottomImageEnabled !== false,
+        bottomImageScale: branding.bottomImageScale || 100,
+        bgImageUrl: branding.bgImageUrl || '',
+        bgImageEnabled: branding.bgImageEnabled || false,
+        bgImageScale: branding.bgImageScale || 100,
         updateBrandingState,
       }}
     >

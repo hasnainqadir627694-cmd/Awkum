@@ -14,8 +14,10 @@ import {
   GraduationCap,
   Building,
   CheckCircle2,
+  Download,
 } from 'lucide-react';
 import { AwkumEmblem } from '../common/AwkumLogo';
+import { PWAInstallModal } from '../common/PWAInstallModal';
 import { auth } from '../../lib/firebase';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { subscribeToBranding, DEFAULT_BRANDING } from '../../lib/brandingService';
@@ -49,6 +51,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [showForgotModal, setShowForgotModal] = useState(false);
+  const [showInstallModal, setShowInstallModal] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
   const [forgotSent, setForgotSent] = useState(false);
   const [branding, setBranding] = useState<BrandingConfig>(DEFAULT_BRANDING);
@@ -173,7 +176,22 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   };
 
   return (
-    <div className="min-h-screen bg-[#F8F0E5] text-[#38271C] flex flex-col justify-between selection:bg-[#493222] selection:text-[#FFF9F1] relative overflow-x-hidden">
+    <div
+      className="min-h-screen bg-[#F8F0E5] text-[#38271C] flex flex-col justify-between selection:bg-[#493222] selection:text-[#FFF9F1] relative overflow-x-hidden"
+      style={
+        branding.bgImageEnabled && branding.bgImageUrl
+          ? {
+              backgroundImage: `url(${branding.bgImageUrl})`,
+              backgroundSize: `${branding.bgImageScale || 100}%`,
+              backgroundPosition: 'center',
+              backgroundRepeat: 'no-repeat',
+            }
+          : undefined
+      }
+    >
+      {branding.bgImageEnabled && branding.bgImageUrl && (
+        <div className="absolute inset-0 bg-[#F8F0E5]/50 pointer-events-none z-0" />
+      )}
       {/* Upper Content: Branding + Form (Centered, sitting directly on cream canvas) */}
       <div className="w-full max-w-sm sm:max-w-md mx-auto px-5 pt-8 sm:pt-10 pb-2 flex-1 flex flex-col items-center z-10">
         {/* 1. University Branding (Real-time synchronized) */}
@@ -200,6 +218,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
             </span>
           </div>
         </div>
+
+        {/* Download App Action Button (PWA Support) */}
+        <button
+          type="button"
+          onClick={() => setShowInstallModal(true)}
+          className="w-full mb-4 py-2 px-4 bg-[#EFE3D3]/80 hover:bg-[#E6D8C7] border border-[#D8C7B4] rounded-2xl flex items-center justify-center gap-2 text-xs font-bold text-[#493222] shadow-xs transition-all cursor-pointer group"
+        >
+          <Download className="w-4 h-4 text-[#493222] group-hover:scale-110 transition-transform" />
+          <span>Download Mobile App (PWA)</span>
+        </button>
+
         <div className="w-full flex items-center justify-center gap-2 p-1 bg-[#EFE3D3]/60 border border-[#E6D8C7] rounded-2xl mb-4">
           <button
             type="button"
@@ -539,16 +568,22 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         )}
       </div>
 
-      <div className="w-full mt-4 relative pointer-events-none select-none">
-        <div className="w-full max-w-4xl mx-auto flex justify-center">
-          <img
-            src={branding.bottomImageUrl || '/images/awkum-admin-building.jpg'}
-            alt="Abdul Wali Khan University Mardan Campus Building"
-            referrerPolicy="no-referrer"
-            className="w-full max-h-[300px] sm:max-h-[380px] object-cover object-bottom"
-          />
+      {branding.bottomImageEnabled !== false && branding.bottomImageUrl && (
+        <div className="w-full mt-4 relative pointer-events-none select-none overflow-hidden flex justify-center">
+          <div className="w-full max-w-4xl mx-auto flex justify-center">
+            <img
+              src={branding.bottomImageUrl}
+              alt="Campus Branding"
+              referrerPolicy="no-referrer"
+              style={{
+                transform: `scale(${(branding.bottomImageScale || 100) / 100})`,
+                transformOrigin: 'bottom center',
+              }}
+              className="w-full max-h-[300px] sm:max-h-[380px] object-cover object-bottom transition-transform duration-200"
+            />
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Forgot Password Modal */}
       {showForgotModal && (
@@ -638,6 +673,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           </div>
         </div>
       )}
+
+      <PWAInstallModal
+        isOpen={showInstallModal}
+        onClose={() => setShowInstallModal(false)}
+      />
     </div>
   );
 };
