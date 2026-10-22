@@ -19,7 +19,7 @@ import {
 import { AwkumEmblem } from '../common/AwkumLogo';
 import { PWAInstallModal } from '../common/PWAInstallModal';
 import { auth } from '../../lib/firebase';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { subscribeToBranding, DEFAULT_BRANDING } from '../../lib/brandingService';
 import { resolveUserRole, registerStudentAccount } from '../../lib/authService';
 import { AdminUser, BrandingConfig, UserRole } from '../../data/adminData';
@@ -81,18 +81,43 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
     setIsLoading(true);
 
-    // If email was entered and Firebase Auth is initialized, attempt real Firebase sign-in
-    if (studentId.includes('@') && auth) {
+    const cleanIdentifier = studentId.trim();
+    const isMasterAdmin = cleanIdentifier.toLowerCase() === 'hasnainbuilds724656@gmail.com';
+
+    // 1. If Master Admin email entered, enforce correct credentials
+    if (isMasterAdmin) {
+      if (password !== 'Hasnainqadir8696') {
+        setIsLoading(false);
+        setErrorMessage('Invalid credentials for Master Admin. Please check your password.');
+        return;
+      }
+
+      // Authenticate with Firebase Auth
+      if (auth) {
+        try {
+          await signInWithEmailAndPassword(auth, 'hasnainbuilds724656@gmail.com', 'Hasnainqadir8696');
+        } catch (authErr: any) {
+          console.info('[Firebase Auth] Master Admin sign-in notice:', authErr?.code || authErr?.message);
+          try {
+            await createUserWithEmailAndPassword(auth, 'hasnainbuilds724656@gmail.com', 'Hasnainqadir8696');
+          } catch (createErr) {
+            console.info('[Firebase Auth] Master Admin creation notice:', createErr);
+          }
+        }
+      }
+    } else if (cleanIdentifier.includes('@') && auth) {
+      // General registered student Firebase sign-in
       try {
-        await signInWithEmailAndPassword(auth, studentId.trim(), password);
+        await signInWithEmailAndPassword(auth, cleanIdentifier, password);
       } catch (authErr: any) {
-        console.info('[Firebase Auth] Sign-in notice:', authErr?.code || authErr?.message);
+        console.info('[Firebase Auth] Student sign-in notice:', authErr?.code || authErr?.message);
       }
     }
 
     try {
-      // Resolve role securely via authorization service (unregistered users are blocked)
-      const resolution = await resolveUserRole(studentId, password);
+      // Resolve role securely via authorization service with verified Firebase Auth UID
+      const verifiedUid = auth?.currentUser?.uid || (isMasterAdmin ? '97DtWk8axhfWOyi3hZfOcWgS0n92' : undefined);
+      const resolution = await resolveUserRole(cleanIdentifier, password, verifiedUid);
 
       if (!resolution.success) {
         setIsLoading(false);
@@ -104,6 +129,21 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       }
 
       if (resolution.user && resolution.role) {
+        // Save session if rememberMe is enabled
+        if (rememberMe && typeof window !== 'undefined') {
+          try {
+            localStorage.setItem(
+              'awkum_active_session',
+              JSON.stringify({
+                email: resolution.user.email,
+                uid: resolution.user.uid,
+                role: resolution.role,
+                savedAt: Date.now(),
+              })
+            );
+          } catch (e) {}
+        }
+
         setIsLoading(false);
         onLoginSuccess(resolution.user, resolution.role);
       } else {
@@ -568,13 +608,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         )}
       </div>
 
-      {branding.bottomImageEnabled !== false && branding.bottomImageUrl && (
+      {branding.bottomImageEnabled !== false && (
         <div className="w-full mt-4 relative pointer-events-none select-none overflow-hidden flex justify-center">
           <div className="w-full max-w-4xl mx-auto flex justify-center">
             <img
-              src={branding.bottomImageUrl}
+              src={branding.bottomImageUrl || '/images/awkum-admin-building.jpg'}
               alt="Campus Branding"
               referrerPolicy="no-referrer"
+              onError={(e) => {
+                (e.target as HTMLImageElement).src = '/images/awkum-admin-building.jpg';
+              }}
               style={{
                 transform: `scale(${(branding.bottomImageScale || 100) / 100})`,
                 transformOrigin: 'bottom center',

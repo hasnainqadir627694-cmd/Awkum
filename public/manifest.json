@@ -1,15 +1,30 @@
 {
-  "name": "AWKUM ClassHub",
+  "id": "/",
+  "name": "AWKUM ClassHub — Student Portal",
   "short_name": "ClassHub",
+  "description": "Production-quality mobile-first Student Portal for Abdul Wali Khan University Mardan (AWKUM). Manage schedules, documents, assignments, attendance, and campus updates.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#F8F0E5",
   "theme_color": "#493222",
+  "categories": [
+    "education",
+    "productivity"
+  ],
   "icons": [
     {
       "src": "/images/awkum-admin-building.jpg",
       "sizes": "192x192",
-      "type": "image/jpeg"
+      "type": "image/jpeg",
+      "purpose": "any"
+    },
+    {
+      "src": "/images/awkum-admin-building.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
     }
   ]
 }

@@ -28,8 +28,12 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
   reminders,
   onToggleReminder,
 }) => {
+  const dayNames: ('Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri')[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+  const todayDayIndex = new Date().getDay(); // 0 = Sun, 1 = Mon ... 5 = Fri
+  const currentWeekday = todayDayIndex >= 1 && todayDayIndex <= 5 ? dayNames[todayDayIndex - 1] : 'Mon';
+
   const [viewMode, setViewMode] = useState<'today' | 'weekly'>('today');
-  const [selectedDay, setSelectedDay] = useState<'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri'>('Wed');
+  const [selectedDay, setSelectedDay] = useState<'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri'>(currentWeekday);
   const [reminderModalClass, setReminderModalClass] = useState<ScheduleItem | null>(null);
   const [selectedMinutes, setSelectedMinutes] = useState<number>(15);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -42,8 +46,8 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
     { day: 'Fri', date: 24, label: 'Fri' },
   ];
 
-  // In "today" mode, show Wednesday 22 Oct. In "weekly" mode, show selected day.
-  const activeDay = viewMode === 'today' ? 'Wed' : selectedDay;
+  // In "today" mode, show current weekday. In "weekly" mode, show selected day.
+  const activeDay = viewMode === 'today' ? currentWeekday : selectedDay;
   const filteredClasses = scheduleItems.filter((item) => item.day === activeDay);
 
   const getSubjectIcon = (subjectId: string) => {

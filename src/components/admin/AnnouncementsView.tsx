@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Megaphone, Send, Check, Bell, Users, Clock } from 'lucide-react';
 import { AnnouncementItem, INITIAL_ANNOUNCEMENTS } from '../../data/adminData';
+import { createAnnouncement } from '../../lib/announcementService';
 
 export const AnnouncementsView: React.FC = () => {
   const [announcements, setAnnouncements] = useState<AnnouncementItem[]>(INITIAL_ANNOUNCEMENTS);
@@ -10,20 +11,12 @@ export const AnnouncementsView: React.FC = () => {
   const [targetAudience, setTargetAudience] = useState<'all' | 'students' | 'teachers' | 'crs'>('all');
   const [sentToast, setSentToast] = useState(false);
 
-  const handleSend = (e: React.FormEvent) => {
+  const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim() || !message.trim()) return;
 
-    const newItem: AnnouncementItem = {
-      id: `anc-${Date.now()}`,
-      title: title.trim(),
-      message: message.trim(),
-      targetAudience,
-      postedBy: 'Master Admin (Hasnain Qadir)',
-      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-    };
-
-    setAnnouncements((prev) => [newItem, ...prev]);
+    const res = await createAnnouncement(title, message, targetAudience, 'Master Admin (Hasnain Qadir)');
+    setAnnouncements((prev) => [res.item, ...prev]);
     setTitle('');
     setMessage('');
     setSentToast(true);

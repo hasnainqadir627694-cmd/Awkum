@@ -43,6 +43,28 @@ export const BrandingProvider: React.FC<{ children: ReactNode }> = ({ children }
     return () => unsubscribe();
   }, []);
 
+  // Update dynamic browser favicon & apple-touch-icon whenever custom logo changes
+  useEffect(() => {
+    const activeLogo = branding.logoUrl;
+    if (activeLogo) {
+      let link: HTMLLinkElement | null = document.querySelector("link[rel~='icon']");
+      if (!link) {
+        link = document.createElement('link');
+        link.rel = 'icon';
+        document.getElementsByTagName('head')[0].appendChild(link);
+      }
+      link.href = activeLogo;
+
+      let appleLink: HTMLLinkElement | null = document.querySelector("link[rel~='apple-touch-icon']");
+      if (!appleLink) {
+        appleLink = document.createElement('link');
+        appleLink.rel = 'apple-touch-icon';
+        document.getElementsByTagName('head')[0].appendChild(appleLink);
+      }
+      appleLink.href = activeLogo;
+    }
+  }, [branding.logoUrl]);
+
   const updateBrandingState = (newBranding: Partial<BrandingConfig>) => {
     setBranding((prev) => ({
       ...prev,
@@ -55,7 +77,7 @@ export const BrandingProvider: React.FC<{ children: ReactNode }> = ({ children }
       value={{
         branding,
         logoUrl: branding.logoUrl || '',
-        bottomImageUrl: branding.bottomImageUrl || '',
+        bottomImageUrl: branding.bottomImageUrl || '/images/awkum-admin-building.jpg',
         bottomImageEnabled: branding.bottomImageEnabled !== false,
         bottomImageScale: branding.bottomImageScale || 100,
         bgImageUrl: branding.bgImageUrl || '',

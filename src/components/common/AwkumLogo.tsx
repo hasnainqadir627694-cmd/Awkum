@@ -35,7 +35,7 @@ export const AwkumEmblem: React.FC<{
         src={activeLogo}
         alt="AWKUM Logo"
         style={{ width: size, height: size }}
-        className={`shrink-0 object-contain select-none pointer-events-none ${className}`}
+        className={`shrink-0 object-contain select-none pointer-events-none bg-transparent ${className}`}
       />
     );
   }

@@ -3,10 +3,14 @@ export type UserStatus = 'active' | 'pending' | 'suspended';
 
 export interface AdminUser {
   id: string;
+  uid?: string; // Verified Firebase Authentication UID
   name: string;
   email: string;
   studentId?: string;
   role: UserRole;
+  roles?: UserRole[]; // Supports combined roles: ['student', 'cr']
+  isCR?: boolean;
+  crStatus?: 'active' | 'revoked' | 'none';
   status: UserStatus;
   registeredDate: string;
   lastLogin?: string;
@@ -17,6 +21,23 @@ export interface AdminUser {
   department?: string;
   fatherName?: string;
   semester?: string;
+  crAssignedAt?: string;
+  crAssignedBy?: string;
+  crRevokedAt?: string;
+  crRevocationReason?: string;
+  crAcknowledged?: boolean;
+  teacherStatus?: 'active' | 'revoked' | 'none';
+  teacherAssignedAt?: string;
+  teacherAssignedBy?: string;
+  teacherRevokedAt?: string;
+  teacherRevocationReason?: string;
+  isFirebaseUser?: boolean;
+}
+
+export function isUserCR(user: AdminUser | null | undefined): boolean {
+  if (!user) return false;
+  if (user.crStatus === 'revoked') return false;
+  return user.role === 'cr' || !!user.isCR || (user.roles?.includes('cr') ?? false);
 }
 
 export interface ClassSection {
@@ -102,15 +123,16 @@ export const OFFICIAL_SUBJECTS = [
   'Physics',
 ] as const;
 
-// Initial Classes & Sections (Matching Mockup 5)
+// Initial Classes & Sections for AWKUM Computer Science & Software Engineering
 export const INITIAL_CLASSES: ClassSection[] = [
-  { id: 'c1', class: 'BSCS', section: '1A', totalStudents: 42, assignedCR: null, status: 'Active' },
-  { id: 'c2', class: 'BSCS', section: '1B', totalStudents: 38, assignedCR: null, status: 'Active' },
-  { id: 'c3', class: 'BSCS', section: '2A', totalStudents: 45, assignedCR: 'Hamza Malik', assignedCREmail: 'hamza.cr@gmail.com', status: 'Active' },
-  { id: 'c4', class: 'BSCS', section: '2B', totalStudents: 40, assignedCR: null, status: 'Active' },
-  { id: 'c5', class: 'BSCS', section: '3A', totalStudents: 36, assignedCR: 'Ayesha Noor', assignedCREmail: 'ayesha123@gmail.com', status: 'Active' },
-  { id: 'c6', class: 'BSCS', section: '3B', totalStudents: 32, assignedCR: null, status: 'Active' },
-  { id: 'c7', class: 'BSCS', section: '4A', totalStudents: 28, assignedCR: null, status: 'Active' },
+  { id: 'c0', class: 'BSSE', section: '1A', totalStudents: 0, assignedCR: null, status: 'Active' },
+  { id: 'c1', class: 'BSCS', section: '1A', totalStudents: 0, assignedCR: null, status: 'Active' },
+  { id: 'c2', class: 'BSCS', section: '1B', totalStudents: 0, assignedCR: null, status: 'Active' },
+  { id: 'c3', class: 'BSCS', section: '2A', totalStudents: 0, assignedCR: null, status: 'Active' },
+  { id: 'c4', class: 'BSCS', section: '2B', totalStudents: 0, assignedCR: null, status: 'Active' },
+  { id: 'c5', class: 'BSCS', section: '3A', totalStudents: 0, assignedCR: null, status: 'Active' },
+  { id: 'c6', class: 'BSCS', section: '3B', totalStudents: 0, assignedCR: null, status: 'Active' },
+  { id: 'c7', class: 'BSCS', section: '4A', totalStudents: 0, assignedCR: null, status: 'Active' },
 ];
 
 // Initial Subject Management Data (Matching Mockup 6)

@@ -7,6 +7,7 @@ import {
   Calendar,
   Phone,
   ShieldCheck,
+  Shield,
   Edit3,
   Lock,
   Bell,
@@ -29,12 +30,18 @@ interface ProfileScreenProps {
   student: StudentProfile;
   onUpdateStudent: (updated: Partial<StudentProfile>) => void;
   onLogout: () => void;
+  isCR?: boolean;
+  assignedClass?: string;
+  onOpenCRPanel?: () => void;
 }
 
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   student,
   onUpdateStudent,
   onLogout,
+  isCR,
+  assignedClass,
+  onOpenCRPanel,
 }) => {
   const [activeModal, setActiveModal] = useState<
     'edit' | 'password' | 'notifications' | 'help' | 'firebase' | null
@@ -119,11 +126,17 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       {/* Main Student Card (Matching reference Screen 09) */}
       <div className="bg-[#FFF9F1] border border-[#E6D8C7] rounded-2xl p-5 shadow-xs flex flex-col items-center text-center">
         <div className="relative mb-3">
-          <img
-            src={student.avatarUrl}
-            alt={student.name}
-            className="w-20 h-20 rounded-full object-cover border-4 border-[#493222] shadow-sm"
-          />
+          {student.avatarUrl && !student.avatarUrl.includes('images.unsplash.com') ? (
+            <img
+              src={student.avatarUrl}
+              alt={student.name}
+              className="w-20 h-20 rounded-full object-cover border-4 border-[#493222] shadow-sm"
+            />
+          ) : (
+            <div className="w-20 h-20 rounded-full bg-[#493222] text-[#FFF9F1] flex items-center justify-center font-bold text-3xl border-4 border-[#493222] shadow-sm">
+              {student.name.charAt(0)}
+            </div>
+          )}
           <span className="absolute bottom-0 right-0 p-1 bg-[#668064] text-white rounded-full ring-2 ring-[#FFF9F1]">
             <ShieldCheck className="w-3.5 h-3.5" />
           </span>
@@ -135,9 +148,28 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         <p className="text-xs font-semibold text-[#806A56] mt-0.5">
           {student.program} · {student.session.split('–')[1] || '2026'}
         </p>
-        <span className="inline-block mt-2 px-3 py-1 bg-[#EFE3D3] text-[#493222] text-xs font-bold rounded-full">
-          AWKUM · {student.id}
-        </span>
+        <div className="flex items-center justify-center gap-2 mt-2">
+          <span className="px-3 py-1 bg-[#EFE3D3] text-[#493222] text-xs font-bold rounded-full">
+            AWKUM · {student.id}
+          </span>
+          {isCR && (
+            <span className="px-3 py-1 bg-[#493222] text-[#FFF9F1] text-xs font-bold rounded-full flex items-center gap-1">
+              <Shield className="w-3.5 h-3.5" />
+              <span>CR ({assignedClass || 'BSCS 3A'})</span>
+            </span>
+          )}
+        </div>
+
+        {isCR && onOpenCRPanel && (
+          <button
+            type="button"
+            onClick={onOpenCRPanel}
+            className="mt-3 w-full max-w-xs mx-auto py-2 px-4 bg-[#493222] hover:bg-[#38271C] text-[#FFF9F1] text-xs font-bold rounded-xl transition-all shadow-xs flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+          >
+            <Shield className="w-4 h-4" />
+            <span>Open Class Representative Panel</span>
+          </button>
+        )}
       </div>
 
       {/* Academic Information Table Card */}
@@ -178,7 +210,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         <div className="flex items-center justify-between py-1.5 text-xs">
           <span className="text-[#806A56]">Current CGPA</span>
           <span className="font-bold text-[#668064] font-mono text-sm">
-            {student.cgpa} / 4.00
+            {student.cgpa > 0 ? `${student.cgpa} / 4.00` : 'N/A (1st Semester)'}
           </span>
         </div>
       </div>

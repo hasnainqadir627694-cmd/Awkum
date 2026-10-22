@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard,
   Users,
@@ -19,6 +19,8 @@ import {
   Search,
   Bell,
   ChevronDown,
+  Database,
+  RefreshCw,
 } from 'lucide-react';
 import { AwkumEmblem } from '../common/AwkumLogo';
 import { AdminUser, AuditLogItem, INITIAL_AUDIT_LOGS, INITIAL_USERS, UserRole } from '../../data/adminData';
@@ -35,7 +37,16 @@ import { AnnouncementsView } from './AnnouncementsView';
 import { BrandingAppearanceView } from './BrandingAppearanceView';
 import { SystemActivityLogsView } from './SystemActivityLogsView';
 import { SettingsSecurityView } from './SettingsSecurityView';
-import { recordAuditLog } from '../../lib/authService';
+import { PanelAccessManagementView } from './PanelAccessManagementView';
+import {
+  recordAuditLog,
+  grantCRAccess,
+  grantTeacherAccess,
+  revokeCRAccess,
+  subscribeToAllUsers,
+  getAllRegisteredUsersFromFirestore,
+  getRegisteredUsers,
+} from '../../lib/authService';
 
 interface AdminLayoutProps {
   currentUser: AdminUser;
@@ -46,6 +57,7 @@ export type AdminViewType =
   | 'dashboard'
   | 'users'
   | 'roles'
+  | 'panel-access'
   | 'classes'
   | 'subjects'
   | 'teachers'
@@ -60,38 +72,94 @@ export type AdminViewType =
 export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout }) => {
   const [activeView, setActiveView] = useState<AdminViewType>('dashboard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [users, setUsers] = useState<AdminUser[]>(INITIAL_USERS);
+  const [users, setUsers] = useState<AdminUser[]>(() => getRegisteredUsers());
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>(INITIAL_AUDIT_LOGS);
   const [roleAssignmentTargetUser, setRoleAssignmentTargetUser] = useState<AdminUser | null>(null);
+  const [roleAssignmentTargetClass, setRoleAssignmentTargetClass] = useState<string | undefined>(undefined);
   const [globalSearch, setGlobalSearch] = useState('');
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
+  const [isFirebaseSyncing, setIsFirebaseSyncing] = useState<boolean>(false);
+  const [lastSyncTime, setLastSyncTime] = useState<string>('Live');
+
+  // Real-time synchronization of registered users from Firebase Firestore
+  useEffect(() => {
+    setIsFirebaseSyncing(true);
+    // Initial fetch from Firestore
+    getAllRegisteredUsersFromFirestore()
+      .then((initialUsers) => {
+        if (Array.isArray(initialUsers) && initialUsers.length > 0) {
+          setUsers(initialUsers);
+        }
+        setIsFirebaseSyncing(false);
+        setLastSyncTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+      })
+      .catch((err) => {
+        console.info('[AdminLayout] Initial Firestore user fetch notice:', err);
+        setIsFirebaseSyncing(false);
+      });
+
+    // Real-time listener for user registrations and role updates
+    const unsubscribe = subscribeToAllUsers((liveUsers) => {
+      if (Array.isArray(liveUsers) && liveUsers.length > 0) {
+        setUsers(liveUsers);
+        setLastSyncTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+      }
+    });
+
+    const handleCustomReg = () => {
+      setUsers([...getRegisteredUsers()]);
+    };
+    window.addEventListener('classhub_user_registered', handleCustomReg);
+    window.addEventListener('classhub_user_role_changed', handleCustomReg);
+
+    return () => {
+      unsubscribe();
+      window.removeEventListener('classhub_user_registered', handleCustomReg);
+      window.removeEventListener('classhub_user_role_changed', handleCustomReg);
+    };
+  }, []);
+
+  const handleRefreshFirebaseUsers = async () => {
+    setIsFirebaseSyncing(true);
+    try {
+      const fresh = await getAllRegisteredUsersFromFirestore();
+      if (Array.isArray(fresh) && fresh.length > 0) {
+        setUsers(fresh);
+      }
+      setLastSyncTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    } finally {
+      setIsFirebaseSyncing(false);
+    }
+  };
 
   // Update a user record (e.g. status suspension)
   const handleUpdateUser = (userId: string, updates: Partial<AdminUser>) => {
     setUsers((prev) =>
-      prev.map((u) => {
-        if (u.id === userId) {
-          const updated = { ...u, ...updates };
+      prev
+        .filter((u): u is AdminUser => Boolean(u && u.id))
+        .map((u) => {
+          if (u.id === userId) {
+            const updated = { ...u, ...updates };
 
-          if (updates.status) {
-            const actionText = updates.status === 'suspended' ? 'Account Suspended' : 'Account Reactivated';
-            const logItem: AuditLogItem = {
-              id: `log-${Date.now()}`,
-              action: actionText,
-              performedBy: currentUser.email,
-              details: `${u.email} status -> ${updates.status}`,
-              timestamp: 'Just now',
-              category: 'security',
-              status: updates.status === 'suspended' ? 'warning' : 'success',
-            };
-            setAuditLogs((prevLogs) => [logItem, ...prevLogs]);
-            recordAuditLog(logItem);
+            if (updates.status) {
+              const actionText = updates.status === 'suspended' ? 'Account Suspended' : 'Account Reactivated';
+              const logItem: AuditLogItem = {
+                id: `log-${Date.now()}`,
+                action: actionText,
+                performedBy: currentUser.email,
+                details: `${u.email} status -> ${updates.status}`,
+                timestamp: 'Just now',
+                category: 'security',
+                status: updates.status === 'suspended' ? 'warning' : 'success',
+              };
+              setAuditLogs((prevLogs) => [logItem, ...prevLogs]);
+              recordAuditLog(logItem);
+            }
+
+            return updated;
           }
-
-          return updated;
-        }
-        return u;
-      })
+          return u;
+        })
     );
   };
 
@@ -102,41 +170,83 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
     assignedSubjects?: string[],
     assignedClass?: string
   ) => {
-    setUsers((prev) =>
-      prev.map((u) => {
-        if (u.id === userId) {
-          const logDetails = `${u.name} -> ${newRole.toUpperCase()}${
-            assignedSubjects ? ` (${assignedSubjects.join(', ')})` : assignedClass ? ` (${assignedClass})` : ''
-          }`;
+    const targetUser = users.find((u) => u && u.id === userId);
+    if (!targetUser) return;
 
-          const newLog: AuditLogItem = {
-            id: `log-${Date.now()}`,
-            action: 'Role Assigned',
-            performedBy: currentUser.email,
-            details: logDetails,
-            timestamp: 'Just now',
-            category: 'role',
-            status: 'success',
-          };
-          setAuditLogs((prevLogs) => [newLog, ...prevLogs]);
-          recordAuditLog(newLog);
-
-          return {
-            ...u,
-            role: newRole,
-            assignedSubjects,
-            assignedClass,
-          };
+    if (newRole === 'cr') {
+      grantCRAccess(currentUser.email, targetUser.email, assignedClass || 'BSCS 3A', targetUser.uid).then((res) => {
+        if (res.success && res.user) {
+          setUsers((prev) =>
+            prev
+              .filter((u): u is AdminUser => Boolean(u && u.id))
+              .map((u) => {
+                if (u.id === userId) return res.user!;
+                if (res.previousCR && u.id === res.previousCR.id) return res.previousCR;
+                return u;
+              })
+          );
         }
-        return u;
-      })
-    );
+      });
+    } else if (newRole === 'teacher') {
+      grantTeacherAccess(currentUser.email, targetUser.email, assignedSubjects || ['PF Theory'], assignedClass, targetUser.uid).then((res: any) => {
+        if (res.success && res.user) {
+          setUsers((prev) =>
+            prev
+              .filter((u): u is AdminUser => Boolean(u && u.id))
+              .map((u) => (u.id === userId ? res.user! : u))
+          );
+        }
+      });
+    } else if (targetUser.role === 'cr' && newRole === 'student') {
+      revokeCRAccess(currentUser.email, targetUser.email, 'Admin reassigned to student').then((res) => {
+        if (res.success && res.user) {
+          setUsers((prev) =>
+            prev
+              .filter((u): u is AdminUser => Boolean(u && u.id))
+              .map((u) => (u.id === userId ? res.user! : u))
+          );
+        }
+      });
+    } else {
+      setUsers((prev) =>
+        prev
+          .filter((u): u is AdminUser => Boolean(u && u.id))
+          .map((u) => {
+            if (u.id === userId) {
+              const logDetails = `${u.name} (${u.email}) -> ${newRole.toUpperCase()}${
+                assignedSubjects ? ` (${assignedSubjects.join(', ')})` : assignedClass ? ` (${assignedClass})` : ''
+              }`;
+
+              const newLog: AuditLogItem = {
+                id: `log-${Date.now()}`,
+                action: 'Role Assigned',
+                performedBy: currentUser.email,
+                details: logDetails,
+                timestamp: 'Just now',
+                category: 'role',
+                status: 'success',
+              };
+              setAuditLogs((prevLogs) => [newLog, ...prevLogs]);
+              recordAuditLog(newLog);
+
+              return {
+                ...u,
+                role: newRole,
+                assignedSubjects,
+                assignedClass,
+              };
+            }
+            return u;
+          })
+      );
+    }
   };
 
   const navItems = [
     { id: 'dashboard' as AdminViewType, label: 'Dashboard', icon: LayoutDashboard },
     { id: 'users' as AdminViewType, label: 'User Management', icon: Users },
     { id: 'roles' as AdminViewType, label: 'Role Assignment', icon: Shield },
+    { id: 'panel-access' as AdminViewType, label: 'Panel Access Mgmt', icon: Shield, highlight: true },
     { id: 'classes' as AdminViewType, label: 'Classes & Sections', icon: Layers },
     { id: 'subjects' as AdminViewType, label: 'Subjects Management', icon: BookOpen },
     { id: 'teachers' as AdminViewType, label: 'Teacher Assignments', icon: Briefcase },
@@ -383,9 +493,12 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
               users={users}
               onUpdateUser={handleUpdateUser}
               onOpenRoleAssignment={(u) => {
-                setRoleAssignmentTargetUser(u);
+                setRoleAssignmentTargetUser(u || null);
+                setRoleAssignmentTargetClass(undefined);
                 setActiveView('roles');
               }}
+              onRefreshFirebase={handleRefreshFirebaseUsers}
+              isFirebaseSyncing={isFirebaseSyncing}
             />
           )}
 
@@ -395,10 +508,21 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
               initialSelectedUser={roleAssignmentTargetUser}
               onSaveRole={handleSaveRole}
               onCancel={() => setActiveView('users')}
+              onRefreshFirebase={handleRefreshFirebaseUsers}
+              isFirebaseSyncing={isFirebaseSyncing}
+              preselectedClass={roleAssignmentTargetClass}
             />
           )}
 
-          {activeView === 'classes' && <ClassesSectionsView />}
+          {activeView === 'panel-access' && (
+            <PanelAccessManagementView
+              users={users}
+              adminEmail={currentUser.email}
+              onRefreshUsers={handleRefreshFirebaseUsers}
+            />
+          )}
+
+          {activeView === 'classes' && <ClassesSectionsView users={users} />}
 
           {activeView === 'subjects' && <SubjectsManagementView />}
 
@@ -407,6 +531,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
               users={users}
               onOpenRoleAssignment={(u) => {
                 setRoleAssignmentTargetUser(u);
+                setRoleAssignmentTargetClass(undefined);
                 setActiveView('roles');
               }}
             />
@@ -415,14 +540,15 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
           {activeView === 'crs' && (
             <CRAssignmentsView
               users={users}
-              onOpenRoleAssignment={(u) => {
-                setRoleAssignmentTargetUser(u);
+              onOpenRoleAssignment={(u, targetClass) => {
+                setRoleAssignmentTargetUser(u || null);
+                setRoleAssignmentTargetClass(targetClass);
                 setActiveView('roles');
               }}
             />
           )}
 
-          {activeView === 'attendance' && <AttendanceOverviewView />}
+          {activeView === 'attendance' && <AttendanceOverviewView users={users} />}
 
           {activeView === 'assignments' && <AssignmentsOverviewView />}
 

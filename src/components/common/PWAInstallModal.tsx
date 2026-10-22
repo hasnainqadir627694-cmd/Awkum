@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Download, X, Smartphone, CheckCircle2, Loader2 } from 'lucide-react';
+import { Download, X, Smartphone, CheckCircle2, Loader2, Share, MoreVertical } from 'lucide-react';
 import { usePWAInstall } from '../../hooks/usePWAInstall';
 
 interface PWAInstallModalProps {
@@ -8,7 +8,7 @@ interface PWAInstallModalProps {
 }
 
 export const PWAInstallModal: React.FC<PWAInstallModalProps> = ({ isOpen, onClose }) => {
-  const { isInstalled, install } = usePWAInstall();
+  const { isInstallable, isInstalled, isIOS, isAndroid, install } = usePWAInstall();
   const [isInstalling, setIsInstalling] = useState(false);
   const [installSuccess, setInstallSuccess] = useState(false);
 
@@ -18,14 +18,12 @@ export const PWAInstallModal: React.FC<PWAInstallModalProps> = ({ isOpen, onClos
     setIsInstalling(true);
     try {
       const success = await install();
-      // If deferredPrompt triggered native prompt and was accepted or if we simulate direct download package
-      setTimeout(() => {
-        setIsInstalling(false);
+      setIsInstalling(false);
+      if (success) {
         setInstallSuccess(true);
-      }, 800);
+      }
     } catch {
       setIsInstalling(false);
-      setInstallSuccess(true);
     }
   };
 
@@ -50,25 +48,25 @@ export const PWAInstallModal: React.FC<PWAInstallModalProps> = ({ isOpen, onClos
             Download AWKUM ClassHub App
           </h3>
           <p className="text-xs text-[#806A56] mt-1 leading-relaxed">
-            Click below to trigger instant download and installation permission.
+            Install AWKUM ClassHub on your device for instant offline access and app-like navigation.
           </p>
 
           {installSuccess || isInstalled ? (
             <div className="mt-5 w-full py-3.5 bg-[#EAF2E9] text-[#668064] rounded-2xl flex items-center justify-center gap-2 text-xs font-bold shadow-xs">
               <CheckCircle2 className="w-4 h-4" />
-              <span>App Downloaded & Installed Successfully!</span>
+              <span>App Installed Successfully!</span>
             </div>
-          ) : (
+          ) : isInstallable ? (
             <button
               type="button"
               disabled={isInstalling}
               onClick={handleInstallClick}
-              className="mt-5 w-full py-3.5 px-4 bg-[#493222] hover:bg-[#38271C] text-[#FFF9F1] text-xs font-bold rounded-2xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-70"
+              className="mt-5 w-full py-3.5 px-4 bg-[#493222] hover:bg-[#342217] text-[#FFF9F1] text-xs font-bold rounded-2xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-70"
             >
               {isInstalling ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Requesting Permission & Downloading...</span>
+                  <span>Installing App...</span>
                 </>
               ) : (
                 <>
@@ -76,6 +74,41 @@ export const PWAInstallModal: React.FC<PWAInstallModalProps> = ({ isOpen, onClos
                   <span>Install App Now</span>
                 </>
               )}
+            </button>
+          ) : isIOS ? (
+            <div className="mt-5 p-4 bg-white border border-[#E6D8C7] rounded-2xl text-left space-y-2 text-xs text-[#38271C]">
+              <div className="font-bold flex items-center gap-1.5 text-[#493222]">
+                <Share className="w-4 h-4 text-amber-600" />
+                <span>iPhone / iPad Installation:</span>
+              </div>
+              <ol className="list-decimal pl-4 space-y-1 text-[#806A56]">
+                <li>Tap the <strong>Share</strong> button in Safari toolbar.</li>
+                <li>Scroll down and tap <strong>"Add to Home Screen"</strong>.</li>
+                <li>Tap <strong>Add</strong> to confirm installation.</li>
+              </ol>
+            </div>
+          ) : isAndroid ? (
+            <div className="mt-5 p-4 bg-white border border-[#E6D8C7] rounded-2xl text-left space-y-2 text-xs text-[#38271C]">
+              <div className="font-bold flex items-center gap-1.5 text-[#493222]">
+                <MoreVertical className="w-4 h-4 text-amber-600" />
+                <span>Android Chrome Installation:</span>
+              </div>
+              <ol className="list-decimal pl-4 space-y-1 text-[#806A56]">
+                <li>Tap the <strong>browser menu (3 vertical dots)</strong>.</li>
+                <li>Select <strong>"Install app"</strong> or <strong>"Add to Home screen"</strong>.</li>
+                <li>Confirm to add AWKUM ClassHub to your home screen.</li>
+              </ol>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                alert('To install AWKUM ClassHub, open your browser menu and select "Install App" or "Add to Home Screen".');
+              }}
+              className="mt-5 w-full py-3.5 px-4 bg-[#493222] hover:bg-[#342217] text-[#FFF9F1] text-xs font-bold rounded-2xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Download className="w-4 h-4" />
+              <span>How to Install</span>
             </button>
           )}
 

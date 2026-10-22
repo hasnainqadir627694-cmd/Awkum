@@ -1,32 +1,27 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StudentProfile,
   INITIAL_STUDENT,
   SUBJECTS,
   SCHEDULE_ITEMS,
-  DAILY_ATTENDANCE_RECORDS,
-  DOCUMENTS,
-  ASSIGNMENTS,
-  NOTIFICATIONS,
-  NOTICES,
   DocumentItem,
   AssignmentItem,
   NotificationItem,
+  DailyAttendanceRecord,
+  NoticeItem,
 } from './data/portalData';
-import { AdminUser, UserRole } from './data/adminData';
+import { AdminUser, UserRole, isUserCR } from './data/adminData';
 import { Header } from './components/common/Header';
 import { BottomNav, TabType } from './components/common/BottomNav';
 import { SideDrawer } from './components/common/SideDrawer';
 import { DocumentPreviewModal } from './components/common/DocumentPreviewModal';
 import { AssignmentDetailModal } from './components/common/AssignmentDetailModal';
-import { db } from './lib/firebase';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db, auth } from './lib/firebase';
+import { signOut, onAuthStateChanged } from 'firebase/auth';
+import { collection, addDoc, serverTimestamp, query, onSnapshot } from 'firebase/firestore';
 import { motion, AnimatePresence } from 'motion/react';
+import { subscribeToUserAccount, markCRAccessAcknowledged, resolveUserRole } from './lib/authService';
+import { subscribeToStudentPersonalAttendance } from './lib/attendanceService';
 
 // Screens & Layouts
 import { LoginScreen } from './components/screens/LoginScreen';
@@ -39,11 +34,33 @@ import { NotificationsScreen } from './components/screens/NotificationsScreen';
 import { ProfileScreen } from './components/screens/ProfileScreen';
 import { AdminLayout } from './components/admin/AdminLayout';
 import { UnavailablePortalScreen } from './components/screens/UnavailablePortalScreen';
+import { CRLayout } from './components/cr/CRLayout';
+import { CRAccessGrantedModal } from './components/cr/CRAccessGrantedModal';
+import { TeacherLayout } from './components/teacher/TeacherLayout';
 
 export default function App() {
   // Authentication & Role-Based Access State
   const [currentUser, setCurrentUser] = useState<AdminUser | null>(null);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
+
+  // One Account, Two Experiences: Allows CR to seamlessly switch between Student Portal and CR Panel
+  const [portalMode, setPortalModeState] = useState<'student' | 'cr'>(() => {
+    if (typeof window !== 'undefined' && window.location.hash.toLowerCase() === '#cr') {
+      return 'cr';
+    }
+    return 'student';
+  });
+
+  const setPortalMode = React.useCallback((mode: 'student' | 'cr') => {
+    setPortalModeState(mode);
+    if (typeof window !== 'undefined') {
+      const targetHash = mode === 'cr' ? '#cr' : '#student';
+      if (window.location.hash.toLowerCase() !== targetHash) {
+        history.replaceState(null, '', `${window.location.pathname}${targetHash}`);
+      }
+    }
+  }, []);
+  const [showCRAccessModal, setShowCRAccessModal] = useState<boolean>(false);
 
   // Navigation & View state for Student Portal
   const [activeTab, setActiveTab] = useState<TabType>('home');
@@ -57,20 +74,21 @@ export default function App() {
   const [previewDocument, setPreviewDocument] = useState<DocumentItem | null>(null);
   const [activeAssignment, setActiveAssignment] = useState<AssignmentItem | null>(null);
 
-  // Centralized Application State
+  // Centralized Dynamic Application State (Clean from initial stage, no fake dummy data)
   const [student, setStudent] = useState<StudentProfile>(INITIAL_STUDENT);
-  const [assignments, setAssignments] = useState<AssignmentItem[]>(ASSIGNMENTS);
-  const [notifications, setNotifications] = useState<NotificationItem[]>(NOTIFICATIONS);
-  const [reminders, setReminders] = useState<Record<string, { enabled: boolean; minutes: number }>>({
-    'sch-wed-1': { enabled: true, minutes: 15 },
-  });
+  const [assignments, setAssignments] = useState<AssignmentItem[]>([]);
+  const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [notices, setNotices] = useState<NoticeItem[]>([]);
+  const [attendanceRecords, setAttendanceRecords] = useState<DailyAttendanceRecord[]>([]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [reminders, setReminders] = useState<Record<string, { enabled: boolean; minutes: number }>>({});
 
-  // Calculate key metrics
+  // Dynamic Real-time Calculations
   const unreadCount = notifications.filter((n) => !n.read).length;
   const pendingAssignmentsCount = assignments.filter((a) => a.status === 'todo').length;
 
-  const totalFinalizedDays = DAILY_ATTENDANCE_RECORDS.filter((r) => r.finalized).length;
-  const presentDaysCount = DAILY_ATTENDANCE_RECORDS.filter(
+  const totalFinalizedDays = attendanceRecords.filter((r) => r.finalized).length;
+  const presentDaysCount = attendanceRecords.filter(
     (r) => r.finalized && r.status === 'present'
   ).length;
   const overallAttendancePercentage =
@@ -78,10 +96,33 @@ export default function App() {
       ? Math.round((presentDaysCount / totalFinalizedDays) * 100)
       : 0;
 
-  // Next upcoming class
-  const nextClass = SCHEDULE_ITEMS.find((item) => item.day === 'Wed' && item.startsIn);
-  const todaySchedule = SCHEDULE_ITEMS.filter((item) => item.day === 'Wed');
+  // Authentic weekday schedule based on actual current day
+  const dayNames: ('Sun' | 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat')[] = [
+    'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'
+  ];
+  const currentDay = dayNames[new Date().getDay()];
+  const isWeekend = currentDay === 'Sun' || currentDay === 'Sat';
+
+  const todaySchedule = isWeekend
+    ? []
+    : SCHEDULE_ITEMS.filter((item) => item.day === currentDay);
+
   const dueSoonAssignments = assignments.filter((item) => item.status === 'todo').slice(0, 2);
+
+  // Next class calculation based on current time
+  const now = new Date();
+  const currentMinutesOfDay = now.getHours() * 60 + now.getMinutes();
+
+  const nextClass = todaySchedule.find((item) => {
+    const match = item.startTime.match(/(\d+):(\d+)\s*(AM|PM)/i);
+    if (!match) return false;
+    let h = parseInt(match[1], 10);
+    const m = parseInt(match[2], 10);
+    const ampm = match[3].toUpperCase();
+    if (ampm === 'PM' && h < 12) h += 12;
+    if (ampm === 'AM' && h === 12) h = 0;
+    return h * 60 + m >= currentMinutesOfDay;
+  }) || (todaySchedule.length > 0 ? todaySchedule[0] : undefined);
 
   // Handlers
   const handleToggleReminder = (classId: string, minutes: number) => {
@@ -197,29 +238,264 @@ export default function App() {
     }
   };
 
+  // 1. Session Restoration on Initial Load & Firebase Auth State Listener
+  useEffect(() => {
+    if (!auth) return;
+
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser?.email) {
+        const cleanEmail = firebaseUser.email.trim().toLowerCase();
+        try {
+          const resolution = await resolveUserRole(cleanEmail, undefined, firebaseUser.uid);
+          if (resolution.success && resolution.user && resolution.role) {
+            handleLoginSuccess(resolution.user, resolution.role);
+          }
+        } catch (e) {
+          console.info('[App Auth] State resolution notice:', e);
+        }
+      } else {
+        // Fallback: Check remembered local session
+        if (typeof window !== 'undefined') {
+          try {
+            const savedSession = localStorage.getItem('awkum_active_session');
+            if (savedSession) {
+              const parsed = JSON.parse(savedSession);
+              if (parsed?.email) {
+                const resolution = await resolveUserRole(parsed.email, undefined, parsed.uid);
+                if (resolution.success && resolution.user && resolution.role) {
+                  handleLoginSuccess(resolution.user, resolution.role);
+                }
+              }
+            }
+          } catch (e) {}
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Real-time listener for current user permissions and role updates
+  useEffect(() => {
+    if (!currentUser?.email) return;
+
+    const unsubscribe = subscribeToUserAccount(currentUser.email, (updatedUser) => {
+      if (updatedUser) {
+        setCurrentUser(updatedUser);
+        if (updatedUser.role) {
+          setUserRole(updatedUser.role);
+        }
+        if (isUserCR(updatedUser)) {
+          if (!updatedUser.crAcknowledged) {
+            setShowCRAccessModal(true);
+          }
+        } else if (updatedUser.crStatus === 'revoked') {
+          // If role was explicitly revoked by Master Admin
+          setShowCRAccessModal(false);
+          setPortalMode('student');
+          if (typeof window !== 'undefined' && window.location.hash === '#cr') {
+            history.replaceState(null, '', window.location.pathname);
+          }
+        }
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [currentUser?.email]);
+
+  // 2b. URL Hash Guard: Respects #cr or #student in browser URL without flickering
+  useEffect(() => {
+    const handleHashCheck = () => {
+      if (typeof window === 'undefined') return;
+      const hash = window.location.hash.toLowerCase();
+      if (hash === '#cr') {
+        if (!currentUser || isUserCR(currentUser) || currentUser.role === 'cr' || currentUser.isCR) {
+          setPortalModeState('cr');
+        }
+      } else if (hash === '#student') {
+        setPortalModeState('student');
+      }
+    };
+
+    handleHashCheck();
+    window.addEventListener('hashchange', handleHashCheck);
+    return () => window.removeEventListener('hashchange', handleHashCheck);
+  }, [currentUser]);
+
+  // 2c. Real-time revocation guard: kick out only if CR privileges are explicitly revoked by Master Admin
+  useEffect(() => {
+    if (portalMode === 'cr' && currentUser?.crStatus === 'revoked') {
+      setPortalMode('student');
+      if (typeof window !== 'undefined' && window.location.hash === '#cr') {
+        history.replaceState(null, '', window.location.pathname);
+      }
+    }
+  }, [currentUser?.crStatus, portalMode]);
+
+  // 3. Real-time personal attendance subscription for enrolled student
+  useEffect(() => {
+    if (!currentUser || userRole === 'master_admin') return;
+
+    const classId = currentUser.assignedClass || 'BSSE 1A';
+    const studentId = currentUser.studentId || currentUser.id;
+    const email = currentUser.email;
+
+    const unsubscribe = subscribeToStudentPersonalAttendance(classId, studentId, email, (records) => {
+      setAttendanceRecords(records);
+    });
+
+    return () => unsubscribe();
+  }, [currentUser?.email, currentUser?.assignedClass, currentUser?.studentId, userRole]);
+
+  // 4. Real-time Firestore synchronization for assignments, documents, and announcements
+  useEffect(() => {
+    if (!currentUser || userRole === 'master_admin' || !db) return;
+
+    // A. Real assignments
+    let unsubAssignments = () => {};
+    try {
+      unsubAssignments = onSnapshot(collection(db, 'assignments'), (snapshot) => {
+        const list: AssignmentItem[] = [];
+        snapshot.forEach((d) => {
+          if (d.exists()) {
+            list.push({ id: d.id, ...d.data() } as AssignmentItem);
+          }
+        });
+        setAssignments(list);
+      }, (err) => {
+        console.info('[App] Assignments sync notice:', err.message);
+      });
+    } catch (e) {}
+
+    // B. Real documents
+    let unsubDocuments = () => {};
+    try {
+      unsubDocuments = onSnapshot(collection(db, 'documents'), (snapshot) => {
+        const list: DocumentItem[] = [];
+        snapshot.forEach((d) => {
+          if (d.exists()) {
+            list.push({ id: d.id, ...d.data() } as DocumentItem);
+          }
+        });
+        setDocuments(list);
+      }, (err) => {
+        console.info('[App] Documents sync notice:', err.message);
+      });
+    } catch (e) {}
+
+    // C. Real announcements
+    let unsubNotices = () => {};
+    try {
+      unsubNotices = onSnapshot(collection(db, 'announcements'), (snapshot) => {
+        const list: NoticeItem[] = [];
+        snapshot.forEach((d) => {
+          if (d.exists()) {
+            const data = d.data();
+            list.push({
+              id: d.id,
+              title: data.title || 'Official University Notice',
+              content: data.message || data.content || '',
+              department: 'Abdul Wali Khan University Mardan',
+              date: data.date || 'Recent',
+              urgent: !!data.urgent,
+            });
+          }
+        });
+        setNotices(list);
+      }, (err) => {
+        console.info('[App] Notices sync notice:', err.message);
+      });
+    } catch (e) {}
+
+    return () => {
+      unsubAssignments();
+      unsubDocuments();
+      unsubNotices();
+    };
+  }, [currentUser?.email, userRole]);
+
   const handleLoginSuccess = (user: AdminUser, role: UserRole) => {
     setCurrentUser(user);
     setUserRole(role);
-    if (role === 'student') {
-      setStudent((prev) => ({
-        ...prev,
-        name: user.name || prev.name,
-        id: user.studentId || prev.id,
-        email: user.email || prev.email,
-        department: user.department || prev.department,
+
+    // Save active session for instant restoration on reload/deployment
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(
+          'awkum_active_session',
+          JSON.stringify({
+            email: user.email,
+            uid: user.uid,
+            role,
+            savedAt: Date.now(),
+          })
+        );
+      } catch (e) {}
+    }
+
+    if (role === 'student' || role === 'cr' || isUserCR(user)) {
+      setStudent({
+        id: user.studentId || user.id,
+        name: user.name,
+        fatherName: user.fatherName || 'Not Provided',
+        email: user.email,
+        department: user.department || 'Software Engineering',
         program: `BS ${user.department || 'Software Engineering'}`,
-        semester: user.semester || prev.semester,
-        fatherName: user.fatherName || prev.fatherName,
-      }));
+        university: 'Abdul Wali Khan University Mardan',
+        session: user.semester?.includes('3rd') ? '2023 – 2027' : '2026 – 2030',
+        semester: user.semester || '1st Semester',
+        section: user.assignedClass ? user.assignedClass.split(' ').pop() || '1A' : '1A',
+        cgpa: 0.0,
+        phone: user.phone || '',
+        emergencyContact: '',
+        address: 'Garden Campus, Mardan, Khyber Pakhtunkhwa',
+        avatarUrl: user.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=400',
+      });
+
+      // Initialize welcome notification for new/returning student
+      setNotifications([
+        {
+          id: `welcome-${user.id || Date.now()}`,
+          title: 'Welcome to AWKUM ClassHub',
+          category: 'Notices',
+          message: `Welcome, ${user.name}! Your account is active for ${user.semester || '1st Semester'} (${user.department || 'Software Engineering'}, Section ${user.assignedClass ? user.assignedClass.split(' ').pop() || '1A' : '1A'}). Timetable and attendance records will accumulate here in real time.`,
+          timestamp: 'Just now',
+          read: false,
+          actionTarget: { tab: 'home' },
+        },
+      ]);
+    }
+
+    // Check if newly granted CR requires the official access granted confirmation
+    if (isUserCR(user) && !user.crAcknowledged) {
+      setShowCRAccessModal(true);
     }
   };
 
   const handleLogout = () => {
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem('awkum_active_session');
+        if (window.location.hash) {
+          history.replaceState(null, '', window.location.pathname);
+        }
+      } catch (e) {}
+    }
+    if (auth) {
+      signOut(auth).catch(() => {});
+    }
     setCurrentUser(null);
     setUserRole(null);
+    setPortalMode('student');
+    setShowCRAccessModal(false);
     setShowProfile(false);
     setShowNotifications(false);
     setSelectedSubjectId(null);
+    setAttendanceRecords([]);
+    setAssignments([]);
+    setDocuments([]);
   };
 
   // 1. If not authenticated, render the shared Login Screen
@@ -232,12 +508,30 @@ export default function App() {
     return <AdminLayout currentUser={currentUser} onLogout={handleLogout} />;
   }
 
-  // 3. If Teacher or CR (portals in development), render dedicated advisory screen
-  if (userRole === 'teacher' || userRole === 'cr') {
-    return <UnavailablePortalScreen user={currentUser} onLogout={handleLogout} />;
+  // 3. If Faculty/Teacher, render dedicated Teacher Portal
+  if (userRole === 'teacher') {
+    return <TeacherLayout currentUser={currentUser} onLogout={handleLogout} />;
   }
 
-  // 4. Default: Render verified Student Portal
+  // 4. One Account, Two Experiences: If student activated CR workspace
+  if (isUserCR(currentUser) && portalMode === 'cr') {
+    return (
+      <CRLayout
+        currentUser={currentUser}
+        todaySchedule={todaySchedule}
+        nextClass={nextClass}
+        onReturnToStudentPortal={() => {
+          setPortalMode('student');
+          if (typeof window !== 'undefined' && window.location.hash === '#cr') {
+            history.replaceState(null, '', window.location.pathname);
+          }
+        }}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
+  // 5. Default: Render verified Student Portal (available to all students & CRs)
   return (
     <div className="min-h-screen bg-[#EFE3D3]/40 text-[#38271C] flex justify-center selection:bg-[#493222] selection:text-[#FFF9F1]">
       {/* Container: If isDeviceFrame is on, wraps into an authentic smartphone shell */}
@@ -270,6 +564,9 @@ export default function App() {
           onOpenDrawer={() => setIsDrawerOpen(true)}
           isDeviceFrame={isDeviceFrame}
           onToggleDeviceFrame={() => setIsDeviceFrame(!isDeviceFrame)}
+          isCR={isUserCR(currentUser)}
+          assignedClass={currentUser?.assignedClass || 'BSCS 3A'}
+          onOpenCRPanel={() => setPortalMode('cr')}
         />
 
         {/* Main Content Area with Smooth Page Transitions */}
@@ -313,15 +610,18 @@ export default function App() {
                       student={student}
                       nextClass={nextClass}
                       todaySchedule={todaySchedule}
-                      recentDocuments={DOCUMENTS}
+                      recentDocuments={documents}
                       dueSoonAssignments={dueSoonAssignments}
-                      notices={NOTICES}
+                      notices={notices}
                       onChangeTab={handleTabChange}
                       onOpenDocument={(doc) => setPreviewDocument(doc)}
                       onOpenAssignment={(asg) => setActiveAssignment(asg)}
                       overallAttendancePercentage={overallAttendancePercentage}
                       presentDaysCount={presentDaysCount}
                       totalDaysCount={totalFinalizedDays}
+                      isCR={isUserCR(currentUser)}
+                      assignedClass={currentUser?.assignedClass || 'BSSE 1A'}
+                      onOpenCRPanel={() => setPortalMode('cr')}
                     />
                   )}
 
@@ -335,10 +635,14 @@ export default function App() {
 
                   {activeTab === 'classes' && (
                     <ClassesScreen
-                      subjects={SUBJECTS}
-                      documents={DOCUMENTS}
+                      subjects={SUBJECTS.map((s) => ({
+                        ...s,
+                        totalNotes: documents.filter((d) => d.subjectId === s.id).length,
+                        totalAssignments: assignments.filter((a) => a.subjectId === s.id).length,
+                      }))}
+                      documents={documents}
                       assignments={assignments}
-                      notices={NOTICES}
+                      notices={notices}
                       selectedSubjectId={selectedSubjectId}
                       onSelectSubject={(id) => setSelectedSubjectId(id)}
                       onOpenDocument={(doc) => setPreviewDocument(doc)}
@@ -349,13 +653,17 @@ export default function App() {
                   {activeTab === 'assignments' && (
                     <AssignmentsScreen
                       assignments={assignments}
-                      subjects={SUBJECTS}
+                      subjects={SUBJECTS.map((s) => ({
+                        ...s,
+                        totalNotes: documents.filter((d) => d.subjectId === s.id).length,
+                        totalAssignments: assignments.filter((a) => a.subjectId === s.id).length,
+                      }))}
                       onOpenAssignment={(asg) => setActiveAssignment(asg)}
                     />
                   )}
 
                   {activeTab === 'progress' && (
-                    <ProgressScreen attendanceRecords={DAILY_ATTENDANCE_RECORDS} />
+                    <ProgressScreen attendanceRecords={attendanceRecords} />
                   )}
                 </>
               )}
@@ -379,6 +687,7 @@ export default function App() {
           onChangeTab={handleTabChange}
           student={student}
           unreadCount={unreadCount}
+          pendingAssignmentsCount={pendingAssignmentsCount}
           onOpenNotifications={() => {
             setShowNotifications(true);
             setShowProfile(false);
@@ -396,6 +705,15 @@ export default function App() {
             setShowNotifications(false);
           }}
           onLogout={handleLogout}
+          isCR={isUserCR(currentUser)}
+          assignedClass={currentUser?.assignedClass || (student.section ? `BSSE ${student.section}` : 'BSSE 1A')}
+          onOpenCRPanel={() => {
+            setIsDrawerOpen(false);
+            setPortalMode('cr');
+            if (typeof window !== 'undefined') {
+              window.location.hash = 'cr';
+            }
+          }}
         />
 
         {/* Modals */}
@@ -408,6 +726,27 @@ export default function App() {
           assignment={activeAssignment}
           onClose={() => setActiveAssignment(null)}
           onSubmitWork={handleSubmitAssignmentWork}
+        />
+
+        <CRAccessGrantedModal
+          isOpen={showCRAccessModal}
+          assignedClass={currentUser?.assignedClass || (student.section ? `BSSE ${student.section}` : 'BSSE 1A')}
+          onOpenCRPanel={() => {
+            setShowCRAccessModal(false);
+            if (currentUser?.email) {
+              markCRAccessAcknowledged(currentUser.email);
+            }
+            setPortalMode('cr');
+            if (typeof window !== 'undefined') {
+              window.location.hash = 'cr';
+            }
+          }}
+          onContinueStudentPortal={() => {
+            setShowCRAccessModal(false);
+            if (currentUser?.email) {
+              markCRAccessAcknowledged(currentUser.email);
+            }
+          }}
         />
       </div>
     </div>

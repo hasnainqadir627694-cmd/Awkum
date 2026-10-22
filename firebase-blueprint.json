@@ -1,0 +1,105 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Registered AWKUM student, CR, faculty, or administrator profile",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "uid": { "type": "string", "description": "Verified Firebase Authentication UID" },
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "studentId": { "type": "string" },
+        "role": { "type": "string", "enum": ["master_admin", "teacher", "cr", "student"] },
+        "roles": { "type": "array" },
+        "isCR": { "type": "boolean" },
+        "crStatus": { "type": "string", "enum": ["active", "revoked", "none"] },
+        "status": { "type": "string", "enum": ["active", "pending", "suspended"] },
+        "registeredDate": { "type": "string" },
+        "department": { "type": "string" },
+        "semester": { "type": "string" },
+        "assignedClass": { "type": "string" },
+        "avatarUrl": { "type": "string" }
+      },
+      "required": ["email", "role", "status"]
+    },
+    "CRAssignment": {
+      "title": "CRAssignment",
+      "description": "Server-authoritative, revocable Class Representative role assignment bound to verified Gmail and Firebase Auth UID",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "uid": { "type": "string", "description": "Verified Firebase Auth UID" },
+        "email": { "type": "string", "format": "email", "description": "Verified Gmail account" },
+        "name": { "type": "string" },
+        "studentId": { "type": "string" },
+        "assignedClass": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "revoked"] },
+        "grantedAt": { "type": "string" },
+        "grantedBy": { "type": "string" },
+        "revokedAt": { "type": "string" },
+        "revokedBy": { "type": "string" },
+        "revocationReason": { "type": "string" }
+      },
+      "required": ["uid", "email", "assignedClass", "status", "grantedAt", "grantedBy"]
+    },
+    "AttendanceSession": {
+      "title": "AttendanceSession",
+      "description": "Daily whole-class attendance record managed by the authorized Class Representative",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "classId": { "type": "string" },
+        "date": { "type": "string" },
+        "displayDate": { "type": "string" },
+        "dayOfWeek": { "type": "string" },
+        "recordedByUid": { "type": "string" },
+        "recordedByName": { "type": "string" },
+        "recordedByEmail": { "type": "string" },
+        "totalEnrolled": { "type": "number" },
+        "presentCount": { "type": "number" },
+        "absentCount": { "type": "number" },
+        "attendancePercentage": { "type": "number" },
+        "finalized": { "type": "boolean" },
+        "finalizedAt": { "type": "string" },
+        "records": { "type": "object" },
+        "pdfReportUrl": { "type": "string" },
+        "pdfReportStatus": { "type": "string" }
+      },
+      "required": ["classId", "date", "recordedByEmail", "finalized"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Security audit record for role assignment, revocation, or administrative actions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "action": { "type": "string" },
+        "performedBy": { "type": "string" },
+        "details": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "category": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["action", "performedBy", "details", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Registered student, CR, and admin user profiles"
+    },
+    "/crAssignments/{assignmentId}": {
+      "schema": "CRAssignment",
+      "description": "Persistent, revocable CR role assignments bound to verified Firebase UIDs and Gmail accounts"
+    },
+    "/attendanceSessions/{sessionId}": {
+      "schema": "AttendanceSession",
+      "description": "Daily attendance sheets marked and finalized by authorized CRs"
+    },
+    "/auditLogs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Security audit trail logs"
+    }
+  }
+}

@@ -1,14 +1,44 @@
 import React, { useState } from 'react';
 import { Plus, Search, MoreVertical, Edit3, Trash2, X, Check } from 'lucide-react';
-import { ClassSection, INITIAL_CLASSES } from '../../data/adminData';
+import { ClassSection, INITIAL_CLASSES, AdminUser } from '../../data/adminData';
 
-export const ClassesSectionsView: React.FC = () => {
+interface ClassesSectionsViewProps {
+  users?: AdminUser[];
+}
+
+export const ClassesSectionsView: React.FC<ClassesSectionsViewProps> = ({ users }) => {
   const [classes, setClasses] = useState<ClassSection[]>(INITIAL_CLASSES);
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
-  const [newClass, setNewClass] = useState({ class: 'BSCS', section: '', totalStudents: 35 });
+  const [newClass, setNewClass] = useState({ class: 'BSSE', section: '', totalStudents: 0 });
 
-  const filtered = classes.filter(
+  const safeUsers = Array.isArray(users)
+    ? users.filter((u): u is AdminUser => Boolean(u && typeof u === 'object' && u.id && u.role))
+    : [];
+
+  const dynamicClasses = classes.map((item) => {
+    const classKey = `${item.class} ${item.section}`.toLowerCase();
+    const assignedCRUser = safeUsers.find(
+      (u) =>
+        (u.isCR || u.role === 'cr' || (Array.isArray(u.roles) && u.roles.includes('cr'))) &&
+        (u.assignedClass?.toLowerCase() === classKey ||
+          u.assignedClass?.toLowerCase().replace(/\s+/g, '') === classKey.replace(/\s+/g, ''))
+    );
+    const enrolledCount = safeUsers.filter(
+      (u) =>
+        (u.role === 'student' || (Array.isArray(u.roles) && u.roles.includes('student'))) &&
+        (u.assignedClass?.toLowerCase() === classKey ||
+          u.assignedClass?.toLowerCase().replace(/\s+/g, '') === classKey.replace(/\s+/g, ''))
+    ).length;
+
+    return {
+      ...item,
+      assignedCR: assignedCRUser?.name || item.assignedCR,
+      totalStudents: enrolledCount > 0 ? enrolledCount : item.totalStudents,
+    };
+  });
+
+  const filtered = dynamicClasses.filter(
     (c) =>
       c.class.toLowerCase().includes(searchTerm.toLowerCase()) ||
       c.section.toLowerCase().includes(searchTerm.toLowerCase()) ||

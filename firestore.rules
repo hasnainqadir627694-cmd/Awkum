@@ -3,50 +3,115 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // 1. Diagnostics Probe Collection (Used by ClassHub Health Check)
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'hasnainbuilds724656@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && (
+        request.auth.uid == userId ||
+        request.auth.token.email.replace('[@.]', '_') == userId
+      );
+    }
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Diagnostics Probe Collection
     match /_health_checks/{document=**} {
       allow read, write: if true;
     }
 
-    // 2. Student Submissions & Turn-Ins
-    match /submissions/{submissionId} {
-      allow read, create, update: if true;
+    // 1. Role Assignments & CR Bindings (Strictly Master Admin Controlled)
+    match /crAssignments/{assignmentId} {
+      // Students can only read their own CR assignment; Master Admin can read all
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        resource.data.uid == request.auth.uid ||
+        resource.data.email == request.auth.token.email
+      );
+      // ONLY Master Admin can grant, modify, or revoke CR assignments
+      allow write: if isAdmin();
     }
 
-    // 3. Course Materials, Subjects, Schedules & Notices (Public Read for Students)
+    match /roleAssignments/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // 2. User Profiles
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      // Master Admin can write any user profile
+      allow write: if isAdmin();
+      // Normal students can register themselves with standard 'student' role only
+      allow create: if isSignedIn() && (
+        request.resource.data.role == 'student' &&
+        (!('isCR' in request.resource.data) || request.resource.data.isCR == false)
+      );
+      // Normal users can update non-privileged fields on their own profile
+      allow update: if isOwner(userId) && (
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'roles', 'isCR', 'crStatus', 'assignedClass'])
+      );
+    }
+
+    // 3. Attendance Sessions
+    match /attendanceSessions/{sessionId} {
+      allow read: if isSignedIn();
+      // Allow write if Master Admin or signed in user
+      allow write: if isSignedIn();
+    }
+
+    // 4. Security Audit Logs (Append-only by authenticated users, read by Admin)
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn();
+      allow update, delete: if false;
+    }
+
+    // 5. University Branding & Appearance
+    match /branding/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // 6. Academic Materials & Portal Content
     match /subjects/{subjectId} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow write: if isAdmin();
     }
 
     match /documents/{documentId} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow write: if isAdmin();
     }
 
     match /schedules/{scheduleId} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow write: if isAdmin();
     }
 
     match /notices/{noticeId} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow write: if isAdmin();
     }
 
-    // 4. Student Profiles & Attendance Records
+    match /submissions/{submissionId} {
+      allow read, create, update: if isSignedIn();
+    }
+
     match /students/{studentId} {
-      allow read, write: if true;
-    }
-
-    match /attendance/{attendanceId} {
-      allow read: if true;
-      allow write: if request.auth != null;
-    }
-
-    // 5. Open Development Fallback (Permits all reads & writes during active testing)
-    match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if isSignedIn();
     }
   }
 }

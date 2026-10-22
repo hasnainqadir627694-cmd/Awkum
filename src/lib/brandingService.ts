@@ -12,7 +12,7 @@ import { recordAuditLog } from './authService';
 
 export const DEFAULT_BRANDING: BrandingConfig = {
   logoUrl: '', // Empty means use default SVG AwkumEmblem
-  bottomImageUrl: '',
+  bottomImageUrl: '/images/awkum-admin-building.jpg',
   bottomImageEnabled: true,
   bottomImageScale: 100,
   bgImageUrl: '',
@@ -26,15 +26,23 @@ export const DEFAULT_BRANDING: BrandingConfig = {
 const BRANDING_DOC_PATH = 'config/branding';
 
 /**
- * Optimizes and resizes an image on an offscreen canvas to prevent payload timeouts
+ * Optimizes and resizes an image on an offscreen canvas to prevent payload timeouts.
+ * Transparent image formats (PNG, WebP, SVG) and logos are preserved untouched via fileToDataUrl
+ * to guarantee that alpha-channel transparency is never flattened to black by JPEG or canvas re-encoding.
  */
 export async function optimizeImageToDataUrl(
   file: File,
   maxDimension = 1400,
   quality = 0.85
 ): Promise<string> {
-  // If not an image or SVG, use normal data URL
-  if (!file.type.startsWith('image/') || file.type.includes('svg')) {
+  const isTransparent =
+    file.type.includes('png') ||
+    file.type.includes('svg') ||
+    file.type.includes('webp') ||
+    /\.(png|svg|webp)$/i.test(file.name);
+
+  // If not a raster image or if it has a transparent alpha channel, preserve original file data directly
+  if (isTransparent || !file.type.startsWith('image/')) {
     return fileToDataUrl(file);
   }
 
@@ -62,7 +70,7 @@ export async function optimizeImageToDataUrl(
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', quality));
+          resolve(canvas.toDataURL('image/jpeg', quality));
         } else {
           resolve(e.target?.result as string);
         }
@@ -176,10 +184,18 @@ export async function uploadBrandingAsset(
   file: File,
   folder = 'awkum_classhub/branding'
 ): Promise<{ url: string; secureUrl: string; bytes: number }> {
-  // 1. Optimize asset client-side first
+  // 1. For logos and transparent formats, preserve original file data directly without canvas re-encoding
   const isLogo = folder.includes('logo');
-  const maxDim = isLogo ? 600 : 1400;
-  const optimizedDataUrl = await optimizeImageToDataUrl(file, maxDim, 0.85);
+  const isTransparent =
+    isLogo ||
+    file.type.includes('png') ||
+    file.type.includes('svg') ||
+    file.type.includes('webp') ||
+    /\.(png|svg|webp)$/i.test(file.name);
+
+  const assetDataUrl = isTransparent
+    ? await fileToDataUrl(file)
+    : await optimizeImageToDataUrl(file, 1400, 0.85);
 
   // 2. Attempt server-side upload to Cloudinary
   try {
@@ -190,7 +206,7 @@ export async function uploadBrandingAsset(
         Accept: 'application/json',
       },
       body: JSON.stringify({
-        fileData: optimizedDataUrl,
+        fileData: assetDataUrl,
         fileName: file.name,
         folder,
       }),
@@ -212,10 +228,10 @@ export async function uploadBrandingAsset(
     console.warn('[Branding Upload] Proxy endpoint unreachable, using client-optimized asset URL:', fetchErr?.message || fetchErr);
   }
 
-  // 3. Resilient fallback: Return the optimized data URL so branding publish NEVER fails with TypeError
+  // 3. Resilient fallback: Return the asset data URL so branding publish NEVER fails with TypeError
   return {
-    url: optimizedDataUrl,
-    secureUrl: optimizedDataUrl,
+    url: assetDataUrl,
+    secureUrl: assetDataUrl,
     bytes: file.size,
   };
 }

@@ -13,39 +13,65 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { AdminUser, UserRole, UserStatus } from '../../data/adminData';
+import { Database, RefreshCw } from 'lucide-react';
 
 interface UserManagementViewProps {
   users: AdminUser[];
   onUpdateUser: (userId: string, updates: Partial<AdminUser>) => void;
-  onOpenRoleAssignment: (user: AdminUser) => void;
+  onOpenRoleAssignment: (user?: AdminUser | null) => void;
+  onRefreshFirebase?: () => Promise<void> | void;
+  isFirebaseSyncing?: boolean;
 }
 
 export const UserManagementView: React.FC<UserManagementViewProps> = ({
   users,
   onUpdateUser,
   onOpenRoleAssignment,
+  onRefreshFirebase,
+  isFirebaseSyncing = false,
 }) => {
-  const [activeTab, setActiveTab] = useState<'all' | 'students' | 'teachers' | 'crs' | 'pending'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'students' | 'teachers' | 'crs' | 'firebase' | 'pending'>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
   const [actionMenuUser, setActionMenuUser] = useState<string | null>(null);
   const [confirmSuspendUser, setConfirmSuspendUser] = useState<AdminUser | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const safeUsers = Array.isArray(users)
+    ? users.filter((u): u is AdminUser => Boolean(u && typeof u === 'object' && u.id && u.role))
+    : [];
+
+  const handleManualRefresh = async () => {
+    if (onRefreshFirebase) {
+      setIsRefreshing(true);
+      try {
+        await onRefreshFirebase();
+      } finally {
+        setTimeout(() => setIsRefreshing(false), 500);
+      }
+    }
+  };
 
   // Filtered users
-  const filteredUsers = users.filter((u) => {
+  const filteredUsers = safeUsers.filter((u) => {
+    if (!u || !u.role) return false;
     // Role tab filtering
-    if (activeTab === 'students' && u.role !== 'student') return false;
-    if (activeTab === 'teachers' && u.role !== 'teacher') return false;
-    if (activeTab === 'crs' && u.role !== 'cr') return false;
+    if (activeTab === 'students' && u.role !== 'student' && !u.roles?.includes('student') && u.role !== 'cr') return false;
+    if (activeTab === 'teachers' && u.role !== 'teacher' && !u.roles?.includes('teacher')) return false;
+    if (activeTab === 'crs' && u.role !== 'cr' && !u.isCR && !u.roles?.includes('cr')) return false;
+    if (activeTab === 'firebase' && !u.isFirebaseUser && !u.studentId?.startsWith('26SE')) return false;
     if (activeTab === 'pending' && u.status !== 'pending') return false;
 
     // Search query
     if (searchTerm.trim()) {
-      const q = searchTerm.toLowerCase();
-      const matchName = u.name.toLowerCase().includes(q);
-      const matchEmail = u.email.toLowerCase().includes(q);
+      const q = searchTerm.toLowerCase().trim();
+      const matchName = (u.name || '').toLowerCase().includes(q);
+      const matchEmail = (u.email || '').toLowerCase().includes(q);
       const matchId = u.studentId?.toLowerCase().includes(q);
-      return matchName || matchEmail || matchId;
+      const matchFather = u.fatherName?.toLowerCase().includes(q);
+      const matchDept = u.department?.toLowerCase().includes(q);
+      const matchClass = u.assignedClass?.toLowerCase().includes(q);
+      return matchName || matchEmail || Boolean(matchId) || Boolean(matchFather) || Boolean(matchDept) || Boolean(matchClass);
     }
     return true;
   });
@@ -107,7 +133,18 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
           />
         </div>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+        <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap">
+          {onRefreshFirebase && (
+            <button
+              type="button"
+              onClick={handleManualRefresh}
+              disabled={isRefreshing || isFirebaseSyncing}
+              className="px-3.5 py-2 bg-white border border-[#C5DEC3] text-[#668064] hover:bg-[#EAF2E9] text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing || isFirebaseSyncing ? 'animate-spin' : ''}`} />
+              <span>Sync Firebase</span>
+            </button>
+          )}
           <button
             type="button"
             className="px-3.5 py-2 bg-white border border-[#D8C7B4] hover:bg-[#F8F0E5] text-xs font-semibold text-[#493222] rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
@@ -136,7 +173,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
               : 'bg-[#FFF9F1] text-[#806A56] hover:text-[#38271C] border border-[#E6D8C7]'
           }`}
         >
-          All Users ({users.length + 238})
+          All Users ({safeUsers.length})
         </button>
         <button
           onClick={() => setActiveTab('students')}
@@ -146,7 +183,18 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
               : 'bg-[#FFF9F1] text-[#806A56] hover:text-[#38271C] border border-[#E6D8C7]'
           }`}
         >
-          Students ({users.filter((u) => u.role === 'student').length + 205})
+          Students ({safeUsers.filter((u) => u.role === 'student' || u.role === 'cr').length})
+        </button>
+        <button
+          onClick={() => setActiveTab('firebase')}
+          className={`px-3.5 py-1.5 rounded-xl transition-colors shrink-0 cursor-pointer flex items-center gap-1.5 ${
+            activeTab === 'firebase'
+              ? 'bg-[#493222] text-[#FFF9F1]'
+              : 'bg-[#FFF9F1] text-[#668064] hover:text-[#38271C] border border-[#C5DEC3]'
+          }`}
+        >
+          <Database className="w-3 h-3" />
+          <span>Firebase Registered ({safeUsers.filter((u) => u.isFirebaseUser || u.studentId?.startsWith('26SE')).length})</span>
         </button>
         <button
           onClick={() => setActiveTab('teachers')}
@@ -156,7 +204,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
               : 'bg-[#FFF9F1] text-[#806A56] hover:text-[#38271C] border border-[#E6D8C7]'
           }`}
         >
-          Teachers ({users.filter((u) => u.role === 'teacher').length + 8})
+          Teachers ({safeUsers.filter((u) => u.role === 'teacher').length})
         </button>
         <button
           onClick={() => setActiveTab('crs')}
@@ -166,7 +214,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
               : 'bg-[#FFF9F1] text-[#806A56] hover:text-[#38271C] border border-[#E6D8C7]'
           }`}
         >
-          Class Representatives (6)
+          Class Representatives ({safeUsers.filter((u) => u.role === 'cr' || u.isCR).length})
         </button>
         <button
           onClick={() => setActiveTab('pending')}
@@ -176,7 +224,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
               : 'bg-[#FFF9F1] text-[#806A56] hover:text-[#38271C] border border-[#E6D8C7]'
           }`}
         >
-          Pending (20)
+          Pending ({safeUsers.filter((u) => u.status === 'pending').length})
         </button>
       </div>
 
@@ -212,10 +260,27 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                           {user.name.charAt(0)}
                         </div>
                         <div>
-                          <div>{user.name}</div>
-                          {user.studentId && (
-                            <div className="text-[10px] text-[#806A56] font-normal">{user.studentId}</div>
-                          )}
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span>{user.name}</span>
+                            {user.fatherName && (
+                              <span className="text-[10px] text-[#806A56] font-normal">
+                                (S/D of {user.fatherName})
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            {user.studentId && (
+                              <span className="text-[10px] text-[#493222] font-mono bg-[#EFE3D3] px-1 rounded">
+                                {user.studentId}
+                              </span>
+                            )}
+                            {user.isFirebaseUser && (
+                              <span className="text-[9px] text-[#668064] font-bold bg-[#EAF2E9] px-1.5 rounded-full flex items-center gap-0.5">
+                                <Database className="w-2.5 h-2.5" />
+                                <span>Firebase</span>
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </td>

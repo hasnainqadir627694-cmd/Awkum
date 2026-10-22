@@ -116,10 +116,20 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
             </svg>
             <div className="absolute flex flex-col items-center justify-center text-center">
               <span className="text-3xl font-extrabold text-[#38271C] tracking-tight">
-                {percentage}%
+                {totalRecordedDays > 0 ? `${percentage}%` : '0%'}
               </span>
-              <span className="text-[10px] font-semibold text-[#668064] uppercase tracking-wide">
-                Eligible
+              <span className={`text-[10px] font-semibold uppercase tracking-wide ${
+                totalRecordedDays === 0
+                  ? 'text-[#806A56]'
+                  : percentage >= 75
+                  ? 'text-[#668064]'
+                  : 'text-[#C84B31]'
+              }`}>
+                {totalRecordedDays === 0
+                  ? 'Initial Stage'
+                  : percentage >= 75
+                  ? 'Eligible'
+                  : 'Below 75%'}
               </span>
             </div>
           </div>
@@ -197,41 +207,47 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
         </div>
 
         {/* Clean Responsive Bar Chart */}
-        <div className="pt-4 pb-2">
-          <div className="h-36 flex items-end justify-between gap-2 px-1">
-            {trendData.map((item, index) => {
-              const isWeekend = (item as any).isWeekend;
-              const barHeight = isWeekend ? 4 : Math.max(8, item.percentage);
-              const isHigh = item.percentage >= 80;
-
-              return (
-                <div
-                  key={index}
-                  className="flex-1 flex flex-col items-center h-full justify-end group"
-                >
-                  <span className="text-[10px] font-mono font-bold text-[#806A56] mb-1 opacity-80 group-hover:opacity-100">
-                    {isWeekend ? '-' : `${item.percentage}%`}
-                  </span>
-                  <div className="w-full max-w-[28px] bg-[#EFE3D3] rounded-t-lg h-28 flex items-end overflow-hidden">
-                    <div
-                      style={{ height: `${barHeight}%` }}
-                      className={`w-full rounded-t-lg transition-all duration-500 ${
-                        isWeekend
-                          ? 'bg-transparent'
-                          : isHigh
-                          ? 'bg-[#668064] group-hover:bg-[#4d664c]'
-                          : 'bg-[#C84B31]/80 group-hover:bg-[#C84B31]'
-                      }`}
-                    />
-                  </div>
-                  <span className="text-[11px] font-semibold text-[#806A56] mt-2 group-hover:text-[#38271C]">
-                    {item.label}
-                  </span>
-                </div>
-              );
-            })}
+        {totalRecordedDays === 0 ? (
+          <div className="py-8 text-center text-xs text-[#806A56] italic">
+            Attendance trends will calculate automatically once daily sessions are recorded in the database.
           </div>
-        </div>
+        ) : (
+          <div className="pt-4 pb-2">
+            <div className="h-36 flex items-end justify-between gap-2 px-1">
+              {trendData.map((item, index) => {
+                const isWeekend = (item as any).isWeekend;
+                const barHeight = isWeekend ? 4 : Math.max(8, item.percentage);
+                const isHigh = item.percentage >= 80;
+
+                return (
+                  <div
+                    key={index}
+                    className="flex-1 flex flex-col items-center h-full justify-end group"
+                  >
+                    <span className="text-[10px] font-mono font-bold text-[#806A56] mb-1 opacity-80 group-hover:opacity-100">
+                      {isWeekend ? '-' : `${item.percentage}%`}
+                    </span>
+                    <div className="w-full max-w-[28px] bg-[#EFE3D3] rounded-t-lg h-28 flex items-end overflow-hidden">
+                      <div
+                        style={{ height: `${barHeight}%` }}
+                        className={`w-full rounded-t-lg transition-all duration-500 ${
+                          isWeekend
+                            ? 'bg-transparent'
+                            : isHigh
+                            ? 'bg-[#668064] group-hover:bg-[#4d664c]'
+                            : 'bg-[#C84B31]/80 group-hover:bg-[#C84B31]'
+                        }`}
+                      />
+                    </div>
+                    <span className="text-[11px] font-semibold text-[#806A56] mt-2 group-hover:text-[#38271C]">
+                      {item.label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Date-wise Daily Attendance History List */}
@@ -278,48 +294,58 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
 
         {/* Records list */}
         <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-          {filteredRecords.map((record, idx) => (
-            <div
-              key={idx}
-              className="flex items-center justify-between p-2.5 bg-white border border-[#E6D8C7] rounded-xl text-xs hover:border-[#493222] transition-colors"
-            >
-              <div className="flex items-center gap-3">
-                <span className="w-9 text-center font-bold text-[11px] text-[#806A56] bg-[#F8F0E5] py-1 rounded-md">
-                  {record.dayOfWeek}
-                </span>
-                <div>
-                  <h4 className="font-bold text-[#38271C]">
-                    {record.date}
-                  </h4>
-                  {record.notes && (
-                    <p className="text-[10px] text-[#806A56] italic">
-                      {record.notes}
-                    </p>
+          {filteredRecords.length === 0 ? (
+            <div className="py-8 text-center bg-white rounded-xl border border-dashed border-[#E6D8C7] p-6">
+              <Calendar className="w-8 h-8 text-[#806A56] mx-auto mb-2 opacity-60" />
+              <h4 className="text-xs font-bold text-[#38271C]">No attendance records logged yet</h4>
+              <p className="text-[11px] text-[#806A56] mt-1 max-w-sm mx-auto">
+                Your daily attendance will be logged here in real time as soon as your Class Representative (CR) or Faculty logs attendance for your section.
+              </p>
+            </div>
+          ) : (
+            filteredRecords.map((record, idx) => (
+              <div
+                key={idx}
+                className="flex items-center justify-between p-2.5 bg-white border border-[#E6D8C7] rounded-xl text-xs hover:border-[#493222] transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="w-9 text-center font-bold text-[11px] text-[#806A56] bg-[#F8F0E5] py-1 rounded-md">
+                    {record.dayOfWeek}
+                  </span>
+                  <div>
+                    <h4 className="font-bold text-[#38271C]">
+                      {record.date}
+                    </h4>
+                    {record.notes && (
+                      <p className="text-[10px] text-[#806A56] italic">
+                        {record.notes}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {record.status === 'present' ? (
+                    <span className="flex items-center gap-1 px-2.5 py-0.5 bg-[#EAF2E9] text-[#668064] text-[11px] font-bold rounded-full">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Present</span>
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 px-2.5 py-0.5 bg-[#FDE8E4] text-[#C84B31] text-[11px] font-bold rounded-full">
+                      <XCircle className="w-3.5 h-3.5" />
+                      <span>Absent</span>
+                    </span>
                   )}
+                  <span
+                    title="Finalized by Academic Registrar"
+                    className="text-gray-400"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-[#668064]" />
+                  </span>
                 </div>
               </div>
-
-              <div className="flex items-center gap-2">
-                {record.status === 'present' ? (
-                  <span className="flex items-center gap-1 px-2.5 py-0.5 bg-[#EAF2E9] text-[#668064] text-[11px] font-bold rounded-full">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Present</span>
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1 px-2.5 py-0.5 bg-[#FDE8E4] text-[#C84B31] text-[11px] font-bold rounded-full">
-                    <XCircle className="w-3.5 h-3.5" />
-                    <span>Absent</span>
-                  </span>
-                )}
-                <span
-                  title="Finalized by Academic Registrar"
-                  className="text-gray-400"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5 text-[#668064]" />
-                </span>
-              </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       </div>
     </div>

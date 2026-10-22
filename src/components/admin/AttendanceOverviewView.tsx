@@ -1,18 +1,103 @@
-import React, { useState } from 'react';
-import { Calendar, UserCheck, AlertCircle, CheckCircle, TrendingUp } from 'lucide-react';
-import { INITIAL_CLASSES } from '../../data/adminData';
+import React, { useState, useEffect } from 'react';
+import { Calendar, UserCheck, AlertCircle, CheckCircle, Clock } from 'lucide-react';
+import { INITIAL_CLASSES, AdminUser } from '../../data/adminData';
+import {
+  AttendanceSession,
+  formatDateKey,
+  getDailyAttendanceSession,
+} from '../../lib/attendanceService';
 
-export const AttendanceOverviewView: React.FC = () => {
-  const [selectedDate, setSelectedDate] = useState('2026-10-19');
+interface AttendanceOverviewViewProps {
+  users?: AdminUser[];
+}
 
-  const attendanceSections = [
-    { section: 'BSCS 3A', cr: 'Ayesha Noor', total: 36, present: 33, absent: 3, percentage: 92, status: 'Marked' },
-    { section: 'BSCS 2A', cr: 'Hamza Malik', total: 45, present: 41, absent: 4, percentage: 91, status: 'Marked' },
-    { section: 'BSCS 1A', cr: 'Unassigned', total: 42, present: 38, absent: 4, percentage: 90, status: 'Marked' },
-    { section: 'BSCS 2B', cr: 'Unassigned', total: 40, present: 34, absent: 6, percentage: 85, status: 'Marked' },
-    { section: 'BSCS 3B', cr: 'Unassigned', total: 32, present: 29, absent: 3, percentage: 91, status: 'Marked' },
-    { section: 'BSCS 4A', cr: 'Unassigned', total: 28, present: 25, absent: 3, percentage: 89, status: 'Marked' },
-  ];
+export const AttendanceOverviewView: React.FC<AttendanceOverviewViewProps> = ({ users }) => {
+  const [selectedDate, setSelectedDate] = useState<string>(formatDateKey());
+  const [sessionsMap, setSessionsMap] = useState<Record<string, AttendanceSession | null>>({});
+  const [isLoading, setIsLoading] = useState(false);
+
+  const safeUsers = Array.isArray(users)
+    ? users.filter((u): u is AdminUser => Boolean(u && typeof u === 'object' && u.id && u.role))
+    : [];
+
+  useEffect(() => {
+    let isMounted = true;
+    setIsLoading(true);
+
+    const loadSessions = async () => {
+      const results: Record<string, AttendanceSession | null> = {};
+      for (const cls of INITIAL_CLASSES) {
+        const classKey = `${cls.class} ${cls.section}`;
+        try {
+          const session = await getDailyAttendanceSession(classKey, selectedDate);
+          results[classKey] = session;
+        } catch {
+          results[classKey] = null;
+        }
+      }
+      if (isMounted) {
+        setSessionsMap(results);
+        setIsLoading(false);
+      }
+    };
+
+    loadSessions();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedDate]);
+
+  // Derive real statistics across sections
+  const attendanceSections = INITIAL_CLASSES.map((cls) => {
+    const classKey = `${cls.class} ${cls.section}`;
+    const assignedCR = safeUsers.find(
+      (u) =>
+        (u.isCR || u.role === 'cr' || (Array.isArray(u.roles) && u.roles.includes('cr'))) &&
+        (u.assignedClass?.toLowerCase() === classKey.toLowerCase() ||
+          u.assignedClass?.toLowerCase().replace(/\s+/g, '') === classKey.toLowerCase().replace(/\s+/g, ''))
+    );
+
+    const enrolledStudents = safeUsers.filter(
+      (u) =>
+        (u.role === 'student' || (Array.isArray(u.roles) && u.roles.includes('student'))) &&
+        (u.assignedClass?.toLowerCase() === classKey.toLowerCase() ||
+          u.assignedClass?.toLowerCase().replace(/\s+/g, '') === classKey.toLowerCase().replace(/\s+/g, ''))
+    ).length;
+
+    const session = sessionsMap[classKey];
+
+    if (session && session.finalized) {
+      return {
+        section: classKey,
+        cr: assignedCR ? assignedCR.name : session.recordedByName || 'Authorized CR',
+        total: session.totalEnrolled || enrolledStudents,
+        present: session.presentCount,
+        absent: session.absentCount,
+        percentage: session.attendancePercentage,
+        status: 'Marked' as const,
+      };
+    }
+
+    return {
+      section: classKey,
+      cr: assignedCR ? assignedCR.name : 'Unassigned',
+      total: enrolledStudents,
+      present: 0,
+      absent: 0,
+      percentage: 0,
+      status: (assignedCR ? 'Pending' : 'No CR') as 'Pending' | 'No CR',
+    };
+  });
+
+  const finalizedSections = attendanceSections.filter((s) => s.status === 'Marked');
+  const totalPresent = finalizedSections.reduce((acc, s) => acc + s.present, 0);
+  const totalAbsent = finalizedSections.reduce((acc, s) => acc + s.absent, 0);
+  const totalFinalizedEnrolled = finalizedSections.reduce((acc, s) => acc + s.total, 0);
+  const averageRate =
+    totalFinalizedEnrolled > 0
+      ? Math.round((totalPresent / totalFinalizedEnrolled) * 100)
+      : 0;
 
   return (
     <div className="space-y-5">
@@ -21,7 +106,7 @@ export const AttendanceOverviewView: React.FC = () => {
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-[#38271C]">Institutional Attendance Overview</h1>
           <p className="text-xs text-[#806A56] mt-0.5">
-            Monitor daily whole-class attendance records submitted by authorized Class Representatives
+            Real daily whole-class attendance records submitted by authorized Class Representatives
           </p>
         </div>
 
@@ -36,27 +121,43 @@ export const AttendanceOverviewView: React.FC = () => {
         </div>
       </div>
 
-      {/* 2. Overall Rate Card */}
+      {/* 2. Real Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-[#FFF9F1] border border-[#E6D8C7] rounded-3xl p-5 shadow-2xs">
           <span className="text-xs font-bold text-[#806A56]">Campus Daily Average</span>
           <div className="flex items-baseline justify-between mt-2">
-            <span className="text-3xl font-bold text-[#38271C]">90.1%</span>
-            <span className="text-xs font-bold text-[#668064]">↑ 1.4% vs last week</span>
+            <span className="text-3xl font-bold text-[#38271C]">
+              {finalizedSections.length > 0 ? `${averageRate}%` : '0%'}
+            </span>
+            <span className="text-xs font-semibold text-[#806A56]">
+              {finalizedSections.length > 0 ? `${finalizedSections.length} sections reporting` : 'Awaiting submissions'}
+            </span>
           </div>
         </div>
+
         <div className="bg-[#FFF9F1] border border-[#E6D8C7] rounded-3xl p-5 shadow-2xs">
           <span className="text-xs font-bold text-[#806A56]">Sections Finalized</span>
           <div className="flex items-baseline justify-between mt-2">
-            <span className="text-3xl font-bold text-[#38271C]">6 / 7</span>
-            <span className="text-xs font-bold text-[#668064]">86% on schedule</span>
+            <span className="text-3xl font-bold text-[#38271C]">
+              {finalizedSections.length} / {attendanceSections.length}
+            </span>
+            <span className="text-xs font-semibold text-[#806A56]">
+              {finalizedSections.length === attendanceSections.length && attendanceSections.length > 0
+                ? 'All complete'
+                : 'In progress'}
+            </span>
           </div>
         </div>
+
         <div className="bg-[#FFF9F1] border border-[#E6D8C7] rounded-3xl p-5 shadow-2xs">
           <span className="text-xs font-bold text-[#806A56]">Active Students Present</span>
           <div className="flex items-baseline justify-between mt-2">
-            <span className="text-3xl font-bold text-[#38271C]">200 / 223</span>
-            <span className="text-xs font-semibold text-[#806A56]">23 absent</span>
+            <span className="text-3xl font-bold text-[#38271C]">
+              {totalPresent} / {totalFinalizedEnrolled}
+            </span>
+            <span className="text-xs font-semibold text-[#806A56]">
+              {totalAbsent} recorded absent
+            </span>
           </div>
         </div>
       </div>
@@ -91,8 +192,20 @@ export const AttendanceOverviewView: React.FC = () => {
                     </div>
                   </td>
                   <td className="py-3.5 px-4">
-                    <span className="px-2.5 py-0.5 bg-[#EAF2E9] text-[#668064] text-[10px] font-bold rounded-full">
-                      {sec.status}
+                    <span
+                      className={`px-2.5 py-0.5 text-[10px] font-bold rounded-full ${
+                        sec.status === 'Marked'
+                          ? 'bg-[#EAF2E9] text-[#668064]'
+                          : sec.status === 'Pending'
+                          ? 'bg-[#FFF3CD] text-[#B78103]'
+                          : 'bg-[#F8F0E5] text-[#806A56]'
+                      }`}
+                    >
+                      {sec.status === 'Marked'
+                        ? 'Finalized'
+                        : sec.status === 'Pending'
+                        ? 'Awaiting Roll Call'
+                        : 'No CR Assigned'}
                     </span>
                   </td>
                 </tr>

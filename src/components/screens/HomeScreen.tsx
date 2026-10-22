@@ -13,6 +13,7 @@ import {
   AlertCircle,
   Download,
   Sparkles,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   StudentProfile,
@@ -36,6 +37,9 @@ interface HomeScreenProps {
   overallAttendancePercentage: number;
   presentDaysCount: number;
   totalDaysCount: number;
+  isCR?: boolean;
+  assignedClass?: string;
+  onOpenCRPanel?: () => void;
 }
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({
@@ -51,6 +55,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   overallAttendancePercentage,
   presentDaysCount,
   totalDaysCount,
+  isCR,
+  assignedClass,
+  onOpenCRPanel,
 }) => {
   const firstName = student.name.split(' ')[0];
 
@@ -144,6 +151,40 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         </div>
       )}
 
+      {/* Class Representative Access Card (Matching Reference Screen 04: Below Next Class) */}
+      {isCR && onOpenCRPanel && (
+        <div
+          onClick={onOpenCRPanel}
+          className="p-4 bg-[#FFF9F1] hover:bg-[#FFFDF9] border border-[#493222]/30 hover:border-[#493222] rounded-2xl shadow-xs flex items-center justify-between gap-3 cursor-pointer transition-all active:scale-[0.99] group animate-in fade-in"
+          role="button"
+          tabIndex={0}
+          aria-label="Open Class Representative Panel"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-11 h-11 rounded-2xl bg-[#493222] text-[#FFF9F1] flex items-center justify-center shrink-0 shadow-xs group-hover:scale-105 transition-transform">
+              <ShieldCheck className="w-6 h-6 text-amber-300" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h3 className="font-bold text-sm text-[#38271C] tracking-tight">
+                  CR Panel
+                </h3>
+                <span className="px-2 py-0.5 bg-[#EAF2E9] text-[#668064] text-[10px] font-bold rounded-full shrink-0">
+                  {assignedClass || 'BSCS 3A'}
+                </span>
+              </div>
+              <p className="text-xs text-[#806A56] truncate mt-0.5">
+                Manage Attendance & Class Activities
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1 shrink-0 text-[#493222]">
+            <ChevronRight className="w-5 h-5 text-[#806A56] group-hover:text-[#493222] group-hover:translate-x-0.5 transition-all" />
+          </div>
+        </div>
+      )}
+
       {/* Metrics Grid (4 Clean Rounded Cards matching reference Screen 02) */}
       <div className="grid grid-cols-2 gap-3">
         {/* Card 1: Attendance */}
@@ -161,11 +202,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="text-2xl font-extrabold text-[#38271C] tracking-tight">
-              {overallAttendancePercentage}%
+              {totalDaysCount > 0 ? `${overallAttendancePercentage}%` : '0%'}
             </span>
           </div>
           <p className="text-[11px] font-medium text-[#806A56] mt-1">
-            {presentDaysCount} of {totalDaysCount} classes
+            {totalDaysCount > 0 ? `${presentDaysCount} of ${totalDaysCount} classes` : '0 sessions logged'}
           </p>
         </div>
 
@@ -184,11 +225,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="text-2xl font-extrabold text-[#38271C] tracking-tight">
-              3
+              {recentDocuments.length}
             </span>
           </div>
           <p className="text-[11px] font-medium text-[#806A56] mt-1">
-            Added today
+            {recentDocuments.length === 1 ? '1 file available' : `${recentDocuments.length} files available`}
           </p>
         </div>
 
@@ -211,7 +252,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             </span>
           </div>
           <p className="text-[11px] font-medium text-[#806A56] mt-1">
-            Due this week
+            {dueSoonAssignments.length === 0 ? 'All caught up' : 'Due this week'}
           </p>
         </div>
 
@@ -350,34 +391,40 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         </div>
 
         <div className="space-y-2">
-          {recentDocuments.slice(0, 3).map((doc) => (
-            <div
-              key={doc.id}
-              onClick={() => onOpenDocument(doc)}
-              className="flex items-center justify-between p-2.5 bg-white border border-[#E6D8C7] rounded-xl hover:border-[#493222] transition-colors cursor-pointer group"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-[#FDE8E4] text-[#C84B31] flex items-center justify-center font-bold text-[10px] uppercase shrink-0">
-                  {doc.fileType}
-                </div>
-                <div>
-                  <h4 className="text-xs font-semibold text-[#38271C] line-clamp-1 group-hover:text-[#493222]">
-                    {doc.title}
-                  </h4>
-                  <div className="flex items-center gap-2 text-[10px] text-[#806A56] mt-0.5">
-                    <span>{doc.subjectName}</span>
-                    <span>·</span>
-                    <span>{doc.fileSize}</span>
-                    <span>·</span>
-                    <span>{doc.uploadDate}</span>
+          {recentDocuments.length === 0 ? (
+            <div className="py-6 text-center text-xs text-[#806A56] italic bg-white/50 rounded-xl border border-dashed border-[#E6D8C7]">
+              No study materials uploaded yet for this semester. Files uploaded by your teachers will appear here.
+            </div>
+          ) : (
+            recentDocuments.slice(0, 3).map((doc) => (
+              <div
+                key={doc.id}
+                onClick={() => onOpenDocument(doc)}
+                className="flex items-center justify-between p-2.5 bg-white border border-[#E6D8C7] rounded-xl hover:border-[#493222] transition-colors cursor-pointer group"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-[#FDE8E4] text-[#C84B31] flex items-center justify-center font-bold text-[10px] uppercase shrink-0">
+                    {doc.fileType}
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-semibold text-[#38271C] line-clamp-1 group-hover:text-[#493222]">
+                      {doc.title}
+                    </h4>
+                    <div className="flex items-center gap-2 text-[10px] text-[#806A56] mt-0.5">
+                      <span>{doc.subjectName}</span>
+                      <span>·</span>
+                      <span>{doc.fileSize}</span>
+                      <span>·</span>
+                      <span>{doc.uploadDate}</span>
+                    </div>
                   </div>
                 </div>
+                <div className="p-1.5 text-[#806A56] group-hover:text-[#493222]">
+                  <Download className="w-4 h-4" />
+                </div>
               </div>
-              <div className="p-1.5 text-[#806A56] group-hover:text-[#493222]">
-                <Download className="w-4 h-4" />
-              </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       </div>
 
