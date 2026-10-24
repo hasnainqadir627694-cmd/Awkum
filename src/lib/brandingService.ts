@@ -6,22 +6,12 @@ import {
   onSnapshot,
   serverTimestamp,
 } from 'firebase/firestore';
-import { BrandingConfig } from '../data/adminData';
+import { BrandingConfig, DEFAULT_BRANDING } from '../data/adminData';
 import { fileToDataUrl } from './cloudinary';
 import { recordAuditLog } from './authService';
+import { brandService } from './BrandService';
 
-export const DEFAULT_BRANDING: BrandingConfig = {
-  logoUrl: '', // Empty means use default SVG AwkumEmblem
-  bottomImageUrl: '/images/awkum-admin-building.jpg',
-  bottomImageEnabled: true,
-  bottomImageScale: 100,
-  bgImageUrl: '',
-  bgImageEnabled: false,
-  bgImageScale: 100,
-  lastUpdated: 'Oct 19, 2026',
-  updatedBy: 'System',
-  version: 1,
-};
+export { DEFAULT_BRANDING };
 
 const BRANDING_DOC_PATH = 'config/branding';
 
@@ -88,6 +78,7 @@ export async function optimizeImageToDataUrl(
 }
 
 const CACHE_KEY = 'awkum_classhub_branding_cache';
+const ZEROX_LOGO_KEY = 'zerox_custom_website_logo';
 
 /**
  * Synchronously retrieves published branding configuration from local storage.
@@ -95,8 +86,10 @@ const CACHE_KEY = 'awkum_classhub_branding_cache';
  * for asynchronous network handshakes or Firestore client SDK initialization.
  */
 export function getCachedBranding(): BrandingConfig {
+  let customLogo = '';
   if (typeof window !== 'undefined') {
     try {
+      customLogo = localStorage.getItem(ZEROX_LOGO_KEY) || '';
       const raw = localStorage.getItem(CACHE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
@@ -104,12 +97,16 @@ export function getCachedBranding(): BrandingConfig {
           return {
             ...DEFAULT_BRANDING,
             ...parsed,
+            logoUrl: customLogo || parsed.logoUrl || '',
           };
         }
       }
     } catch (e) {}
   }
-  return DEFAULT_BRANDING;
+  return {
+    ...DEFAULT_BRANDING,
+    logoUrl: customLogo || DEFAULT_BRANDING.logoUrl,
+  };
 }
 
 /**
@@ -119,6 +116,9 @@ export function saveCachedBranding(config: BrandingConfig): void {
   if (typeof window !== 'undefined' && config) {
     try {
       localStorage.setItem(CACHE_KEY, JSON.stringify(config));
+      if (config.logoUrl) {
+        localStorage.setItem(ZEROX_LOGO_KEY, config.logoUrl);
+      }
     } catch (e) {}
   }
 }
@@ -369,25 +369,44 @@ export async function publishBranding(
 
   if (db) {
     try {
-      const docRef = doc(db, 'config', 'branding');
-      await setDoc(docRef, {
+      const docRefConfig = doc(db, 'config', 'branding');
+      const docRefPages = doc(db, 'pages', 'branding_settings');
+      const docRefSettings = doc(db, 'branding', 'settings');
+      const payload = {
         ...updated,
+        logoDataUrl: updated.logoUrl,
         publishedAt: serverTimestamp(),
-      });
+      };
+      await Promise.allSettled([
+        setDoc(docRefConfig, payload, { merge: true }),
+        setDoc(docRefPages, payload, { merge: true }),
+        setDoc(docRefSettings, payload, { merge: true }),
+      ]);
     } catch (err) {
       console.info('[Branding Service] Firestore write notice:', err);
     }
   }
 
-  // Update server cache
+  // Update server branding cache and server static disk icons for PWA
   fetch('/api/branding', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updated),
   }).catch(() => {});
 
-  // Save synchronously to client local storage cache
+  if (updated.logoUrl) {
+    fetch('/api/branding/logo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ logoDataUrl: updated.logoUrl }),
+    }).catch(() => {});
+  }
+
+  // Save synchronously to client local storage cache and force instant visual asset re-render across DOM & PWA
   saveCachedBranding(updated);
+  try {
+    brandService.forceReRenderVisualAssets(updated);
+  } catch (e) {}
 
   // Record audit log
   await recordAuditLog({

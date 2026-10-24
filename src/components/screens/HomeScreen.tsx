@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   Clock,
   MapPin,
@@ -24,8 +24,6 @@ import {
   NoticeItem,
 } from '../../data/portalData';
 import { TabType } from '../common/BottomNav';
-import { usePWAInstall } from '../../hooks/usePWAInstall';
-import { PWAInstallModal } from '../common/PWAInstallModal';
 
 interface HomeScreenProps {
   student: StudentProfile;
@@ -65,8 +63,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   totalSubjectsCount = 0,
 }) => {
   const firstName = student.name.split(' ')[0];
-  const { isInstalled, isInstallable, install } = usePWAInstall();
-  const [showPwaModal, setShowPwaModal] = useState(false);
 
   return (
     <div className="space-y-4 pb-20">
@@ -85,42 +81,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           <span>Fall 2026</span>
         </div>
       </div>
-
-      {/* Prominent PWA App Installation Banner with Custom Branding Logo */}
-      {!isInstalled && (
-        <div className="bg-[#493222] text-[#FFF9F1] rounded-2xl p-4 shadow-md flex items-center justify-between gap-3 border border-[#38271C] animate-in fade-in">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-10 h-10 rounded-xl bg-[#FFF9F1] text-[#493222] p-1 flex items-center justify-center shrink-0 shadow-xs">
-              <img src="/icon.svg" alt="AWKUM ClassHub Logo" className="w-8 h-8 object-contain" />
-            </div>
-            <div className="min-w-0">
-              <h4 className="font-serif font-bold text-xs sm:text-sm leading-tight text-white">
-                Download AWKUM ClassHub App
-              </h4>
-              <p className="text-[11px] text-[#D8C7B4] mt-0.5 truncate">
-                Directly install web app on phone screen with custom branding logo
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={async () => {
-              if (isInstallable) {
-                await install();
-              } else {
-                setShowPwaModal(true);
-              }
-            }}
-            className="px-3.5 py-2 bg-[#D6A564] hover:bg-[#c49252] text-[#24170F] font-bold text-xs rounded-xl shadow-xs shrink-0 flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Install App</span>
-          </button>
-        </div>
-      )}
-
-      {/* PWA Modal Fallback */}
-      <PWAInstallModal isOpen={showPwaModal} onClose={() => setShowPwaModal(false)} />
 
       {/* Prominent Next Class Card (Dark Espresso) */}
       {nextClass ? (

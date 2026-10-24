@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { BrandingConfig, DEFAULT_BRANDING } from '../data/adminData';
-import { subscribeToBranding, getPublishedBranding, getCachedBranding, saveCachedBranding } from '../lib/brandingService';
+import { getCachedBranding } from '../lib/brandingService';
+import { brandService } from '../lib/BrandService';
 
 interface BrandingContextType {
   branding: BrandingConfig;
@@ -12,18 +13,20 @@ interface BrandingContextType {
   bgImageEnabled: boolean;
   bgImageScale: number;
   updateBrandingState: (newBranding: Partial<BrandingConfig>) => void;
+  forceReRenderVisualAssets: (config: BrandingConfig) => void;
 }
 
 const BrandingContext = createContext<BrandingContextType>({
   branding: DEFAULT_BRANDING,
   logoUrl: '',
-  bottomImageUrl: DEFAULT_BRANDING.bottomImageUrl || '',
-  bottomImageEnabled: true,
+  bottomImageUrl: '',
+  bottomImageEnabled: false,
   bottomImageScale: 100,
   bgImageUrl: '',
   bgImageEnabled: false,
   bgImageScale: 100,
   updateBrandingState: () => {},
+  forceReRenderVisualAssets: () => {},
 });
 
 export const BrandingProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
@@ -31,48 +34,30 @@ export const BrandingProvider: React.FC<{ children: ReactNode }> = ({ children }
   const [branding, setBranding] = useState<BrandingConfig>(() => getCachedBranding());
 
   useEffect(() => {
-    // 1. Initial fetch from fast server endpoint / Firestore
-    getPublishedBranding().then((initial) => {
-      setBranding(initial);
-      saveCachedBranding(initial);
-    });
+    // 1. Initialize BrandService real-time listeners across Firestore docs & DOM meta tags
+    brandService.init();
 
-    // 2. Real-time Firestore subscription for multi-tier platform-wide sync
-    const unsubscribe = subscribeToBranding((updated) => {
+    // 2. Subscribe to BrandService updates for immediate UI state synchronization
+    const unsubscribe = brandService.subscribe((updated) => {
       setBranding(updated);
-      saveCachedBranding(updated);
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
-  // Update dynamic browser favicon & apple-touch-icon whenever custom logo changes
-  useEffect(() => {
-    const activeLogo = branding.logoUrl;
-    if (activeLogo) {
-      let link: HTMLLinkElement | null = document.querySelector("link[rel~='icon']");
-      if (!link) {
-        link = document.createElement('link');
-        link.rel = 'icon';
-        document.getElementsByTagName('head')[0].appendChild(link);
-      }
-      link.href = activeLogo;
-
-      let appleLink: HTMLLinkElement | null = document.querySelector("link[rel~='apple-touch-icon']");
-      if (!appleLink) {
-        appleLink = document.createElement('link');
-        appleLink.rel = 'apple-touch-icon';
-        document.getElementsByTagName('head')[0].appendChild(appleLink);
-      }
-      appleLink.href = activeLogo;
-    }
-  }, [branding.logoUrl]);
-
   const updateBrandingState = (newBranding: Partial<BrandingConfig>) => {
-    setBranding((prev) => ({
-      ...prev,
+    const merged: BrandingConfig = {
+      ...branding,
       ...newBranding,
-    }));
+    };
+    setBranding(merged);
+    brandService.forceReRenderVisualAssets(merged);
+  };
+
+  const forceReRenderVisualAssets = (config: BrandingConfig) => {
+    brandService.forceReRenderVisualAssets(config);
   };
 
   return (
@@ -80,13 +65,14 @@ export const BrandingProvider: React.FC<{ children: ReactNode }> = ({ children }
       value={{
         branding,
         logoUrl: branding.logoUrl || '',
-        bottomImageUrl: branding.bottomImageUrl || '/images/awkum-admin-building.jpg',
-        bottomImageEnabled: branding.bottomImageEnabled !== false,
+        bottomImageUrl: branding.bottomImageUrl || '',
+        bottomImageEnabled: branding.bottomImageEnabled || false,
         bottomImageScale: branding.bottomImageScale || 100,
         bgImageUrl: branding.bgImageUrl || '',
         bgImageEnabled: branding.bgImageEnabled || false,
         bgImageScale: branding.bgImageScale || 100,
         updateBrandingState,
+        forceReRenderVisualAssets,
       }}
     >
       {children}
@@ -95,3 +81,4 @@ export const BrandingProvider: React.FC<{ children: ReactNode }> = ({ children }
 };
 
 export const useBranding = () => useContext(BrandingContext);
+

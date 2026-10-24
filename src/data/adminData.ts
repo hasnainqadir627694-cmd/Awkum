@@ -141,7 +141,7 @@ export interface BrandingConfig {
 export const DEFAULT_BRANDING: BrandingConfig = {
   logoUrl: '',
   bottomImageUrl: '',
-  bottomImageEnabled: true,
+  bottomImageEnabled: false,
   bottomImageScale: 100,
   bgImageUrl: '',
   bgImageEnabled: false,

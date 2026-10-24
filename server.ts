@@ -2,10 +2,13 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import { v2 as cloudinary } from 'cloudinary';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import adminPkg from 'firebase-admin';
 import { GoogleGenAI, Type } from '@google/genai';
 const admin: any = adminPkg;
+
+let lastLogoTimestamp = Date.now();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1307,6 +1310,157 @@ async function startServer() {
     } catch (err: any) {
       return res.status(500).json({ error: err?.message || 'Failed to update server branding cache.' });
     }
+  });
+
+  /**
+   * Tier 4 Server-Side Disk & PWA Sync Endpoint:
+   * Parses base64 buffer and overwrites all static icon files on disk (public/icon-192.png, public/icon-512.png, favicon.png, apple-touch-icon.png, og-image.png)
+   */
+  app.post('/api/branding/logo', async (req, res) => {
+    try {
+      const logoDataUrl = req.body?.logoDataUrl || req.body?.logoData || req.body?.logoUrl || '';
+      if (!logoDataUrl) {
+        return res.status(400).json({ error: 'Missing logoDataUrl payload.' });
+      }
+
+      let buffer: Buffer | null = null;
+      if (logoDataUrl.includes(';base64,')) {
+        const parts = logoDataUrl.split(';base64,');
+        buffer = Buffer.from(parts[1], 'base64');
+      } else if (logoDataUrl.startsWith('http://') || logoDataUrl.startsWith('https://')) {
+        try {
+          const fetchRes = await fetch(logoDataUrl);
+          if (fetchRes.ok) {
+            const arrayBuffer = await fetchRes.arrayBuffer();
+            buffer = Buffer.from(arrayBuffer);
+          }
+        } catch (e) {
+          console.warn('[Server Branding Logo] Notice fetching remote logo:', e);
+        }
+      }
+
+      const publicDir = path.resolve(__dirname, 'public');
+      if (!fs.existsSync(publicDir)) {
+        fs.mkdirSync(publicDir, { recursive: true });
+      }
+
+      lastLogoTimestamp = Date.now();
+      const filesUpdated: string[] = [];
+
+      if (buffer) {
+        const staticIconNames = [
+          'icon-192.png',
+          'icon-512.png',
+          'favicon.png',
+          'apple-touch-icon.png',
+          'og-image.png',
+          'pwa-192x192.png',
+          'pwa-512x512.png',
+          'pwa-maskable-512x512.png',
+        ];
+
+        for (const filename of staticIconNames) {
+          const targetPath = path.join(publicDir, filename);
+          fs.writeFileSync(targetPath, buffer);
+          filesUpdated.push(filename);
+
+          const distDir = path.resolve(__dirname, 'dist');
+          if (fs.existsSync(distDir)) {
+            try {
+              fs.writeFileSync(path.join(distDir, filename), buffer);
+            } catch {}
+          }
+        }
+      }
+
+      if (serverBrandingCache) {
+        serverBrandingCache.logoUrl = logoDataUrl;
+      } else {
+        serverBrandingCache = { logoUrl: logoDataUrl, version: lastLogoTimestamp };
+      }
+
+      if (adminDb) {
+        const payload = {
+          logoUrl: logoDataUrl,
+          logoDataUrl,
+          publishedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+        adminDb.collection('config').doc('branding').set(payload, { merge: true }).catch(() => {});
+        adminDb.collection('pages').doc('branding_settings').set(payload, { merge: true }).catch(() => {});
+        adminDb.collection('branding').doc('settings').set(payload, { merge: true }).catch(() => {});
+      }
+
+      console.log(`[Server Branding Logo] Tier 4 sync complete! Updated static PWA icons on disk. Timestamp v=${lastLogoTimestamp}`);
+
+      return res.json({
+        success: true,
+        timestamp: lastLogoTimestamp,
+        filesUpdated,
+        logoUrl: logoDataUrl,
+      });
+    } catch (err: any) {
+      console.error('[Server Branding Logo Error]:', err);
+      return res.status(500).json({ error: err?.message || 'Failed to update static icons on disk.' });
+    }
+  });
+
+  /**
+   * Dynamic Web App Manifest Endpoint for PWA Installation with timestamp cache-buster (?v=...)
+   */
+  app.get('/manifest.json', (_req, res) => {
+    res.setHeader('Content-Type', 'application/manifest+json');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    return res.json({
+      id: '/',
+      name: 'AWKUM ClassHub — Student Portal',
+      short_name: 'ClassHub',
+      description: 'Production-quality mobile-first Student Portal for Abdul Wali Khan University Mardan (AWKUM). Manage schedules, documents, assignments, attendance, and campus updates.',
+      start_url: '/',
+      scope: '/',
+      display: 'standalone',
+      orientation: 'portrait',
+      background_color: '#F8F0E5',
+      theme_color: '#493222',
+      categories: ['education', 'productivity'],
+      icons: [
+        {
+          src: `/icon-192.png?v=${lastLogoTimestamp}`,
+          sizes: '192x192',
+          type: 'image/png',
+          purpose: 'any'
+        },
+        {
+          src: `/pwa-192x192.png?v=${lastLogoTimestamp}`,
+          sizes: '192x192',
+          type: 'image/png',
+          purpose: 'any'
+        },
+        {
+          src: `/icon-512.png?v=${lastLogoTimestamp}`,
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'any'
+        },
+        {
+          src: `/pwa-512x512.png?v=${lastLogoTimestamp}`,
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'any'
+        },
+        {
+          src: `/pwa-maskable-512x512.png?v=${lastLogoTimestamp}`,
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'maskable'
+        },
+        {
+          src: `/apple-touch-icon.png?v=${lastLogoTimestamp}`,
+          sizes: '180x180',
+          type: 'image/png',
+          purpose: 'any'
+        }
+      ]
+    });
   });
 
   // =========================================================================

@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { Download, X, Smartphone, CheckCircle2, Loader2, Share, MoreVertical } from 'lucide-react';
 import { usePWAInstall } from '../../hooks/usePWAInstall';
 
+import { AwkumEmblem } from './AwkumLogo';
+
 interface PWAInstallModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -40,8 +42,8 @@ export const PWAInstallModal: React.FC<PWAInstallModalProps> = ({ isOpen, onClos
         </button>
 
         <div className="flex flex-col items-center text-center">
-          <div className="w-14 h-14 rounded-2xl bg-[#493222] text-[#FFF9F1] flex items-center justify-center shadow-md mb-3.5">
-            <Smartphone className="w-7 h-7" />
+          <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-3.5">
+            <AwkumEmblem size={52} />
           </div>
 
           <h3 className="font-serif text-lg font-bold text-[#38271C]">
