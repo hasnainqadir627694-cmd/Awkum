@@ -139,14 +139,14 @@ export interface BrandingConfig {
 }
 
 export const DEFAULT_BRANDING: BrandingConfig = {
-  logoUrl: '',
+  logoUrl: '/favicon.png',
   bottomImageUrl: '',
   bottomImageEnabled: false,
   bottomImageScale: 100,
   bgImageUrl: '',
   bgImageEnabled: false,
   bgImageScale: 100,
-  lastUpdated: 'Oct 19, 2026',
+  lastUpdated: 'Oct 24, 2026',
   updatedBy: 'System',
   version: 1,
 };

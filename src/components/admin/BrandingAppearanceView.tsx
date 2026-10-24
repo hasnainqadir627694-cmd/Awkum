@@ -299,7 +299,7 @@ export const BrandingAppearanceView: React.FC<BrandingAppearanceViewProps> = ({
                   onClick={handleResetLogo}
                   className="px-3.5 py-2.5 bg-white border border-[#D8C7B4] hover:bg-[#F8F0E5] text-xs font-semibold text-[#C84B31] rounded-xl transition-colors cursor-pointer"
                 >
-                  Restore Vector Emblem
+                  Revert to Default
                 </button>
               )}
             </div>

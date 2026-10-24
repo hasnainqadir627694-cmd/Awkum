@@ -75,11 +75,31 @@ try {
 }
 
 let serverBrandingCache: any = null;
+const startupFavicon = path.resolve(__dirname, 'public', 'favicon.png');
+if (fs.existsSync(startupFavicon)) {
+  serverBrandingCache = {
+    logoUrl: '/favicon.png',
+    bottomImageUrl: '',
+    bottomImageEnabled: false,
+    bottomImageScale: 100,
+    bgImageUrl: '',
+    bgImageEnabled: false,
+    bgImageScale: 100,
+    version: Date.now(),
+  };
+}
 if (adminDb) {
   adminDb.collection('config').doc('branding').get().then((snap: any) => {
     if (snap.exists) {
-      serverBrandingCache = snap.data();
-      console.log('[Server Branding] Loaded server branding cache from Firestore');
+      const data = snap.data();
+      if (data) {
+        serverBrandingCache = {
+          ...(serverBrandingCache || {}),
+          ...data,
+          logoUrl: data.logoUrl || data.logoDataUrl || (serverBrandingCache?.logoUrl || '/favicon.png'),
+        };
+        console.log('[Server Branding] Loaded server branding cache from Firestore');
+      }
     }
   }).catch(() => {});
 }
@@ -1287,10 +1307,12 @@ async function startServer() {
         console.info('[Server Branding] Notice querying Firestore branding:', err?.message || err);
       }
     }
+    const publicFavicon = path.resolve(__dirname, 'public', 'favicon.png');
+    const fallbackLogo = fs.existsSync(publicFavicon) ? '/favicon.png' : '';
     return res.json({
-      logoUrl: '',
-      bottomImageUrl: '/images/awkum-admin-building.jpg',
-      bottomImageEnabled: true,
+      logoUrl: fallbackLogo,
+      bottomImageUrl: '',
+      bottomImageEnabled: false,
       bottomImageScale: 100,
       bgImageUrl: '',
       bgImageEnabled: false,

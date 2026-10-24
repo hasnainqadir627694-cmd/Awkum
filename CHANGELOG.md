@@ -3,6 +3,17 @@
 All notable changes to the AWKUM ClassHub codebase are documented in this file.  
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.0] - 2026-10-24
+
+### Fixed
+- **Root-Cause Diagnostic Fix — Global Logo Sync & Dynamic Branding Parity**:
+  - Eliminated the dual-branding inconsistency between login screens, top navigation bars, and app shells.
+  - Established the uploaded custom logo as the authoritative single source of truth across all application layers (Login, Register, Header, Teacher Portal, Admin Room, CR Workspace, Mobile Drawer, Modals, and Browser Tab/PWA icons).
+  - Permanently removed the hardcoded AWKUM minaret archway SVG from `AwkumLogo.tsx` and `public/icon.svg`. In its place, implemented a clean, neutral academic placeholder that only appears if no logo has been configured.
+  - Synchronized static PWA icons (`favicon.png`, `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`, `pwa-192x192.png`, `pwa-512x512.png`, `pwa-maskable-512x512.png`, `og-image.png`) directly from the uploaded logo buffer.
+  - Updated `index.html` to link to `/favicon.png` with dynamic timestamp cache-busting and synchronized OpenGraph and Twitter cards.
+  - Enhanced Express `GET /api/branding` and server initialization to automatically load disk icons as fallback when Firestore documents are freshly provisioned.
+
 ---
 
 ## [2.5.0] - 2026-10-23

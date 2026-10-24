@@ -144,12 +144,14 @@ export class BrandService {
       this.updateLinkTag("link[rel~='icon']", 'icon', logoWithBuster);
       this.updateLinkTag("link[rel~='apple-touch-icon']", 'apple-touch-icon', logoWithBuster);
       this.updateLinkTag("link[rel='shortcut icon']", 'shortcut icon', logoWithBuster);
+      this.updateMetaTag("meta[property='og:image']", 'og:image', logoWithBuster);
+      this.updateMetaTag("meta[name='twitter:image']", 'twitter:image', logoWithBuster);
     }
 
     // 3. Update PWA status bar & theme color meta tags
-    this.updateMetaTag("meta[name='theme-color']", 'theme-color', '#1e293b');
+    this.updateMetaTag("meta[name='theme-color']", 'theme-color', '#493222');
     this.updateMetaTag("meta[name='apple-mobile-web-app-status-bar-style']", 'apple-mobile-web-app-status-bar-style', 'black-translucent');
-    this.updateMetaTag("meta[name='msapplication-TileColor']", 'msapplication-TileColor', '#1e293b');
+    this.updateMetaTag("meta[name='msapplication-TileColor']", 'msapplication-TileColor', '#493222');
 
     // 4. Update splash screen image if present in DOM
     const splashImg = document.querySelector<HTMLImageElement>('#pwa-splash-logo');
@@ -157,11 +159,16 @@ export class BrandService {
       splashImg.src = logoUrl;
     }
 
-    // 5. Dispatch global window custom event for cross-module synchronization
+    // 5. Dispatch global window custom events for cross-module synchronization
     try {
       window.dispatchEvent(
         new CustomEvent<BrandingConfig>('awkum:branding-updated', {
           detail: config,
+        })
+      );
+      window.dispatchEvent(
+        new CustomEvent('website_logo_updated', {
+          detail: { logoUrl },
         })
       );
     } catch (e) {}

@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { GraduationCap } from 'lucide-react';
 import { useBranding } from '../../context/BrandingContext';
 import { getCachedBranding } from '../../lib/brandingService';
 
@@ -11,15 +12,18 @@ interface AwkumLogoProps {
 }
 
 /**
- * Clean AWKUM Emblem:
- * - Dynamically consumes multi-tier branding: if a custom logo is published, renders it everywhere.
- * - Sits freely with NO enclosing border, cage, or background box.
+ * Universal Portal Emblem:
+ * - Dynamically consumes multi-tier branding: when a custom logo is published or uploaded, renders it everywhere.
+ * - Single source of truth across Login, Headers, Sidebars, Modals, and Portals.
+ * - If no logo is configured, renders a clean neutral academic placeholder (NO hardcoded minaret silhouette).
  */
 export const AwkumEmblem: React.FC<{
   className?: string;
   size?: number;
   overrideLogoUrl?: string;
 }> = ({ className = '', size = 44, overrideLogoUrl }) => {
+  const [imageFailed, setImageFailed] = useState(false);
+
   let brandingLogoUrl = '';
   try {
     const branding = useBranding();
@@ -28,61 +32,41 @@ export const AwkumEmblem: React.FC<{
     // Graceful fallback if rendered outside BrandingProvider
   }
 
-  const activeLogo = overrideLogoUrl || brandingLogoUrl || getCachedBranding().logoUrl;
+  const cached = getCachedBranding();
+  const activeLogo = (overrideLogoUrl || brandingLogoUrl || cached.logoUrl || '/favicon.png').trim();
 
-  if (activeLogo) {
+  if (activeLogo && !imageFailed) {
     return (
       <img
         src={activeLogo}
-        alt="AWKUM Logo"
+        alt="University Logo"
         style={{ width: size, height: size }}
+        onError={() => setImageFailed(true)}
         className={`shrink-0 object-contain select-none pointer-events-none bg-transparent ${className}`}
       />
     );
   }
 
-  // Pure SVG emblem silhouette — NO enclosing box, NO border, NO cage!
+  // Clean, neutral academic placeholder when no logo is uploaded — NO hardcoded emblem!
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 100 100"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className={`shrink-0 select-none ${className}`}
-      aria-label="AWKUM University Emblem"
+    <div
+      style={{ width: size, height: size }}
+      className={`shrink-0 rounded-xl bg-[#493222]/10 border border-[#D8C7B4]/60 flex items-center justify-center text-[#493222] select-none ${className}`}
+      aria-label="Portal Logo Placeholder"
     >
-      {/* Central University Grand Arch / Minarets silhouette */}
-      <g fill="currentColor" className="text-[#493222]">
-        {/* Central Dome & Crescent Spire */}
-        <path d="M50 14 C44 20 40 25 40 32 L60 32 C60 25 56 20 50 14 Z" />
-        <rect x="42" y="33" width="16" height="4" rx="1" />
-        <circle cx="50" cy="11" r="2.5" />
-
-        {/* Main Grand Archway */}
-        <path
-          d="M32 40 C32 34 36 32 42 32 L58 32 C64 32 68 34 68 40 L68 76 L60 76 L60 52 C60 45 55 40 50 40 C45 40 40 45 40 52 L40 76 L32 76 Z"
-        />
-
-        {/* Left Minaret & Spire */}
-        <path d="M22 26 L26 26 L26 76 L20 76 L20 26 Z" />
-        <polygon points="23,17 27,26 19,26" />
-        <rect x="18" y="38" width="8" height="2.5" rx="0.5" />
-        <rect x="18" y="56" width="8" height="2.5" rx="0.5" />
-
-        {/* Right Minaret & Spire */}
-        <path d="M78 26 L82 26 L82 76 L76 76 L76 26 Z" />
-        <polygon points="79,17 83,26 75,26" />
-        <rect x="74" y="38" width="8" height="2.5" rx="0.5" />
-        <rect x="74" y="56" width="8" height="2.5" rx="0.5" />
-
-        {/* Base Steps Foundation */}
-        <rect x="14" y="78" width="72" height="4" rx="1.5" />
-        <rect x="22" y="83" width="56" height="3.5" rx="1" />
-      </g>
-    </svg>
+      <GraduationCap
+        style={{
+          width: Math.max(14, Math.round(size * 0.55)),
+          height: Math.max(14, Math.round(size * 0.55)),
+        }}
+        className="opacity-75"
+      />
+    </div>
   );
 };
+
+// Alias for universal clarity
+export const UniversalLogo = AwkumEmblem;
 
 export const AwkumLogo: React.FC<AwkumLogoProps> = ({
   size = 'md',

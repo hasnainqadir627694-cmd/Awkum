@@ -79,6 +79,7 @@ export async function optimizeImageToDataUrl(
 
 const CACHE_KEY = 'awkum_classhub_branding_cache';
 const ZEROX_LOGO_KEY = 'zerox_custom_website_logo';
+const APP_CUSTOM_LOGO_KEY = 'app_custom_website_logo';
 
 /**
  * Synchronously retrieves published branding configuration from local storage.
@@ -89,7 +90,10 @@ export function getCachedBranding(): BrandingConfig {
   let customLogo = '';
   if (typeof window !== 'undefined') {
     try {
-      customLogo = localStorage.getItem(ZEROX_LOGO_KEY) || '';
+      customLogo =
+        localStorage.getItem(APP_CUSTOM_LOGO_KEY) ||
+        localStorage.getItem(ZEROX_LOGO_KEY) ||
+        '';
       const raw = localStorage.getItem(CACHE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
@@ -97,7 +101,7 @@ export function getCachedBranding(): BrandingConfig {
           return {
             ...DEFAULT_BRANDING,
             ...parsed,
-            logoUrl: customLogo || parsed.logoUrl || '',
+            logoUrl: customLogo || parsed.logoUrl || DEFAULT_BRANDING.logoUrl,
           };
         }
       }
@@ -118,6 +122,7 @@ export function saveCachedBranding(config: BrandingConfig): void {
       localStorage.setItem(CACHE_KEY, JSON.stringify(config));
       if (config.logoUrl) {
         localStorage.setItem(ZEROX_LOGO_KEY, config.logoUrl);
+        localStorage.setItem(APP_CUSTOM_LOGO_KEY, config.logoUrl);
       }
     } catch (e) {}
   }

@@ -4,10 +4,13 @@ import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { brandService } from '../lib/BrandService';
 
 const LOCAL_STORAGE_KEY = 'zerox_custom_website_logo';
+const APP_STORAGE_KEY = 'app_custom_website_logo';
 
 /**
  * Custom hook implementing the 5-tier branding logo sync architecture:
- * Tier 1: Instant 0ms Local Cache (localStorage key: zerox_custom_website_logo)
+ * Tier 1: Instant 0ms Local Cache (localStorage key: app_custom_website_logo & zerox_custom_website_logo)
+ * Tier 2: Real-time window CustomEvent synchronization ('website_logo_updated')
+ * Tier 3: DOM-level Favicon & Apple-Touch-Icon cache buster injection
  * Tier 4: Server-Side Disk & PWA Sync (/api/branding/logo & Express routes)
  * Tier 5: Cloud Persistence via Firestore Single Document (pages/branding_settings & branding/settings)
  */
@@ -15,13 +18,15 @@ export function useWebsiteLogo() {
   const [logoUrl, setLogoUrl] = useState<string>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
+        const stored =
+          localStorage.getItem(APP_STORAGE_KEY) ||
+          localStorage.getItem(LOCAL_STORAGE_KEY);
         if (stored) return stored;
       } catch {
         // Fallback gracefully
       }
     }
-    return brandService.getCurrentConfig().logoUrl || '';
+    return brandService.getCurrentConfig().logoUrl || '/favicon.png';
   });
 
   useEffect(() => {
@@ -35,8 +40,18 @@ export function useWebsiteLogo() {
       }
     });
 
+    // 3. Listen to window event for instant same-frame updates
+    const handleLogoEvent = (e: any) => {
+      const url = e.detail?.logoUrl || e.detail?.logoDataUrl;
+      if (url) {
+        setLogoUrl(url);
+      }
+    };
+    window.addEventListener('website_logo_updated', handleLogoEvent);
+
     return () => {
       unsubscribe();
+      window.removeEventListener('website_logo_updated', handleLogoEvent);
     };
   }, []);
 

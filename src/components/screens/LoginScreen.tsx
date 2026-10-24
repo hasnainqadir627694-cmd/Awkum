@@ -320,7 +320,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         <div className="flex flex-col items-center text-center mb-4">
           {/* University Logo (No cage, no borders, slightly bigger) */}
           <div className="mb-3.5 flex items-center justify-center">
-            <AwkumEmblem size={56} />
+            <AwkumEmblem size={56} overrideLogoUrl={branding.logoUrl} />
           </div>
 
           <h1 className="font-serif text-2xl font-bold tracking-wider text-[#38271C]">
