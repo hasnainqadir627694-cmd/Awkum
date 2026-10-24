@@ -27,8 +27,11 @@ export const AssignmentsScreen: React.FC<AssignmentsScreenProps> = ({
   const [selectedSubjectId, setSelectedSubjectId] = useState<string>('all');
 
   const filteredAssignments = assignments.filter((item) => {
+    const targetSubj = subjects.find((s) => s.id === selectedSubjectId);
     const matchesSubject =
-      selectedSubjectId === 'all' || item.subjectId === selectedSubjectId;
+      selectedSubjectId === 'all' ||
+      item.subjectId === selectedSubjectId ||
+      (targetSubj && (item.subjectName === targetSubj.name || (item as any).subject === targetSubj.name));
 
     if (statusFilter === 'todo') {
       return matchesSubject && item.status === 'todo';
@@ -54,7 +57,7 @@ export const AssignmentsScreen: React.FC<AssignmentsScreenProps> = ({
             Assignments
           </h2>
           <p className="text-xs font-medium text-[#806A56] mt-0.5">
-            Course tasks, homework, and problem sets
+            Course assignments, homework, and problem sets
           </p>
         </div>
       </div>

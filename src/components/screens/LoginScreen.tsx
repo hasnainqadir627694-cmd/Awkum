@@ -18,11 +18,13 @@ import {
 } from 'lucide-react';
 import { AwkumEmblem } from '../common/AwkumLogo';
 import { PWAInstallModal } from '../common/PWAInstallModal';
+import { EmailVerificationPendingScreen } from './EmailVerificationPendingScreen';
 import { auth } from '../../lib/firebase';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
-import { subscribeToBranding, DEFAULT_BRANDING } from '../../lib/brandingService';
+import { subscribeToBranding, DEFAULT_BRANDING, getCachedBranding, saveCachedBranding, getPublishedBranding } from '../../lib/brandingService';
 import { resolveUserRole, registerStudentAccount } from '../../lib/authService';
-import { AdminUser, BrandingConfig, UserRole } from '../../data/adminData';
+import { subscribeToClasses } from '../../lib/classService';
+import { AdminUser, BrandingConfig, UserRole, ClassSection } from '../../data/adminData';
 
 interface LoginScreenProps {
   onLoginSuccess: (user: AdminUser, role: UserRole) => void;
@@ -31,6 +33,7 @@ interface LoginScreenProps {
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   // Mode: 'login' | 'register'
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState<string | null>(null);
 
   // Login form state
   const [studentId, setStudentId] = useState('');
@@ -45,6 +48,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const [regPassword, setRegPassword] = useState('');
   const [showRegPassword, setShowRegPassword] = useState(false);
   const [department, setDepartment] = useState('Software Engineering');
+  const [availableClasses, setAvailableClasses] = useState<ClassSection[]>([]);
+  const [selectedClass, setSelectedClass] = useState<string>('');
 
   // Shared status state
   const [isLoading, setIsLoading] = useState(false);
@@ -54,14 +59,36 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const [showInstallModal, setShowInstallModal] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
   const [forgotSent, setForgotSent] = useState(false);
-  const [branding, setBranding] = useState<BrandingConfig>(DEFAULT_BRANDING);
 
-  // Subscribe to live branding updates from Firestore in real time
+  // Synchronous initialization from local storage cache prevents default branding flash on initial mount
+  const [branding, setBranding] = useState<BrandingConfig>(() => getCachedBranding());
+
+  // Subscribe to live branding updates and available classes in real time
   useEffect(() => {
-    const unsubscribe = subscribeToBranding((cfg) => {
-      setBranding(cfg);
+    getPublishedBranding().then((cfg) => {
+      if (cfg) {
+        setBranding(cfg);
+        saveCachedBranding(cfg);
+      }
     });
-    return () => unsubscribe();
+
+    const unsubscribeBranding = subscribeToBranding((cfg) => {
+      setBranding(cfg);
+      saveCachedBranding(cfg);
+    });
+
+    const unsubscribeClasses = subscribeToClasses((liveClasses) => {
+      const active = liveClasses.filter((c) => c.status !== 'Inactive');
+      setAvailableClasses(active);
+      if (active.length > 0 && !selectedClass) {
+        setSelectedClass(`${active[0].class} ${active[0].section}`);
+      }
+    });
+
+    return () => {
+      unsubscribeBranding();
+      unsubscribeClasses();
+    };
   }, []);
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
@@ -83,6 +110,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
     const cleanIdentifier = studentId.trim();
     const isMasterAdmin = cleanIdentifier.toLowerCase() === 'hasnainbuilds724656@gmail.com';
+    let authVerifiedUid: string | undefined = undefined;
 
     // 1. If Master Admin email entered, enforce correct credentials
     if (isMasterAdmin) {
@@ -106,18 +134,46 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         }
       }
     } else if (cleanIdentifier.includes('@') && auth) {
-      // General registered student Firebase sign-in
+      // General registered student Firebase sign-in with clear error handling
       try {
-        await signInWithEmailAndPassword(auth, cleanIdentifier, password);
+        const cred = await signInWithEmailAndPassword(auth, cleanIdentifier, password);
+        if (cred?.user?.uid) {
+          authVerifiedUid = cred.user.uid;
+        }
       } catch (authErr: any) {
-        console.info('[Firebase Auth] Student sign-in notice:', authErr?.code || authErr?.message);
+        const code = authErr?.code || '';
+        console.info('[Firebase Auth] Student sign-in notice:', code, authErr?.message);
+
+        if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
+          setIsLoading(false);
+          setErrorMessage('Incorrect password. Please verify your credentials and try again.');
+          return;
+        } else if (code === 'auth/user-not-found') {
+          setIsLoading(false);
+          setErrorMessage('No account found with this email in Firebase Authentication. Please click "Register New Account" below.');
+          return;
+        } else if (code === 'auth/too-many-requests') {
+          setIsLoading(false);
+          setErrorMessage('Access temporarily disabled due to multiple failed login attempts. Please try again later or reset your password.');
+          return;
+        } else if (code === 'auth/user-disabled') {
+          setIsLoading(false);
+          setErrorMessage('This user account has been disabled in Firebase Authentication. Please contact IT Center.');
+          return;
+        }
       }
     }
 
     try {
       // Resolve role securely via authorization service with verified Firebase Auth UID
-      const verifiedUid = auth?.currentUser?.uid || (isMasterAdmin ? '97DtWk8axhfWOyi3hZfOcWgS0n92' : undefined);
+      const verifiedUid = authVerifiedUid || auth?.currentUser?.uid || (isMasterAdmin ? '97DtWk8axhfWOyi3hZfOcWgS0n92' : undefined);
       const resolution = await resolveUserRole(cleanIdentifier, password, verifiedUid);
+
+      if (resolution.requiresVerification) {
+        setIsLoading(false);
+        setPendingVerificationEmail(resolution.unverifiedEmail || cleanIdentifier);
+        return;
+      }
 
       if (!resolution.success) {
         setIsLoading(false);
@@ -181,6 +237,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       return;
     }
 
+    if (availableClasses.length > 0 && !selectedClass) {
+      setErrorMessage('Please select your enrolled academic class/section.');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
@@ -190,6 +251,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         email: regEmail,
         password: regPassword,
         department,
+        assignedClass: selectedClass || undefined,
       });
 
       if (!result.success) {
@@ -198,9 +260,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         return;
       }
 
+      if (result.requiresVerification) {
+        setIsLoading(false);
+        setPendingVerificationEmail(result.unverifiedEmail || regEmail);
+        return;
+      }
+
       setIsLoading(false);
       setSuccessMessage(
-        `Registration successful! You are enrolled in 1st Semester (${department}). Student ID: ${result.user?.studentId}`
+        `Registration successful! Enrolled in ${selectedClass || department}. Student ID: ${result.user?.studentId}`
       );
 
       // Smooth direct sign-in into 1st semester student portal
@@ -214,6 +282,23 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       setErrorMessage(err?.message || 'An error occurred during registration.');
     }
   };
+
+  if (pendingVerificationEmail) {
+    return (
+      <EmailVerificationPendingScreen
+        email={pendingVerificationEmail}
+        onVerified={() => {
+          setPendingVerificationEmail(null);
+          setSuccessMessage('Email verified successfully! You may now sign in to your student portal.');
+          setAuthMode('login');
+        }}
+        onBackToLogin={() => {
+          setPendingVerificationEmail(null);
+          setErrorMessage('');
+        }}
+      />
+    );
+  }
 
   return (
     <div
@@ -520,6 +605,37 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
                   <option value="Software Engineering">Software Engineering (Garden Campus)</option>
                   <option value="Computer Science">Computer Science</option>
                 </select>
+              </div>
+            </div>
+
+            {/* Enrolled Class & Section */}
+            <div>
+              <label className="block text-xs font-semibold text-[#38271C] mb-1">
+                Enrolled Class & Section *
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#806A56]">
+                  <GraduationCap className="w-4 h-4" />
+                </div>
+                {availableClasses.length === 0 ? (
+                  <div className="w-full pl-10 pr-3.5 py-2.5 bg-[#FFF3CD]/70 border border-[#F0D597] rounded-xl text-xs font-semibold text-[#856404]">
+                    No classes configured yet by administration
+                  </div>
+                ) : (
+                  <select
+                    value={selectedClass}
+                    onChange={(e) => setSelectedClass(e.target.value)}
+                    required
+                    className="w-full pl-10 pr-3.5 py-2.5 bg-white border border-[#D8C7B4] rounded-xl text-xs sm:text-sm font-semibold text-[#38271C] focus:outline-none focus:ring-2 focus:ring-[#493222] cursor-pointer"
+                  >
+                    <option value="">-- Select Your Class & Section --</option>
+                    {availableClasses.map((cls) => (
+                      <option key={cls.id} value={`${cls.class} ${cls.section}`}>
+                        {cls.class} Section {cls.section}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
             </div>
 

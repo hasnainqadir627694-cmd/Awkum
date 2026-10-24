@@ -61,9 +61,9 @@ export const TeacherDocumentsView: React.FC<TeacherDocumentsViewProps> = ({
     setModalError('');
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      // Max file size 10MB
-      if (file.size > 10 * 1024 * 1024) {
-        setModalError('File size exceeds 10MB limit. Please select a smaller document.');
+      // Max file size 100MB for Cloudinary asset upload
+      if (file.size > 100 * 1024 * 1024) {
+        setModalError('File size exceeds 100MB limit. Please select a smaller document.');
         return;
       }
       setSelectedFile(file);
@@ -99,6 +99,7 @@ export const TeacherDocumentsView: React.FC<TeacherDocumentsViewProps> = ({
         file: selectedFile,
         teacherEmail: teacher.email,
         teacherName: teacher.name,
+        targetClass: selectedSubject.assignedClass || teacher.assignedClass || 'BSSE 1A',
       });
 
       setIsUploading(false);
@@ -127,8 +128,8 @@ export const TeacherDocumentsView: React.FC<TeacherDocumentsViewProps> = ({
       <div className="bg-[#FFF9F1] border border-[#E6D8C7] rounded-3xl p-5 shadow-2xs space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h1 className="text-xl font-bold text-[#38271C]">
-              Course Documents ({selectedSubject.name})
+            <h1 className="text-xl font-extrabold text-[#38271C]">
+              Course Documents — <span className="text-[#493222] underline decoration-amber-600/40">{selectedSubject.name}</span>
             </h1>
             <p className="text-xs text-[#806A56] mt-0.5">
               Upload lectures, lab manuals, and syllabus files for {selectedSubject.code}
@@ -319,7 +320,7 @@ export const TeacherDocumentsView: React.FC<TeacherDocumentsViewProps> = ({
 
               <div>
                 <label className="block text-xs font-bold text-[#38271C] mb-1">
-                  Select File (PDF, PPT, Word, Images - Max 10MB)
+                  Select File (PDF, PPT, Word, Images - Up to 100MB)
                 </label>
                 <div className="border-2 border-dashed border-[#D8C7B4] hover:border-[#493222] rounded-2xl p-4 text-center transition-colors bg-white">
                   <input
@@ -340,7 +341,7 @@ export const TeacherDocumentsView: React.FC<TeacherDocumentsViewProps> = ({
                     <span className="text-[10px] text-[#806A56]">
                       {selectedFile
                         ? `${(selectedFile.size / 1024).toFixed(0)} KB`
-                        : 'PDF, PPT, DOC, Images up to 10MB'}
+                        : 'PDF, PPT, DOC, Images up to 100MB'}
                     </span>
                   </label>
                 </div>

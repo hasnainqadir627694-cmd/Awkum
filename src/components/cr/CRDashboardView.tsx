@@ -23,7 +23,7 @@ interface CRDashboardViewProps {
   totalEnrolled: number;
   recentSessions: AttendanceSession[];
   nextClass: ScheduleItem | undefined;
-  onNavigateTab: (tab: 'dashboard' | 'attendance' | 'students' | 'history' | 'notify') => void;
+  onNavigateTab: (tab: 'dashboard' | 'attendance' | 'schedule' | 'students' | 'history' | 'notify') => void;
   onNotifyTeacherClick: (classItem: ScheduleItem) => void;
 }
 
@@ -150,53 +150,65 @@ export const CRDashboardView: React.FC<CRDashboardViewProps> = ({
         <span className="text-[11px] font-bold uppercase tracking-wider text-[#806A56] block mb-2 px-1">
           Quick Actions
         </span>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
           {/* Action 1: Mark Attendance */}
           <button
             onClick={() => onNavigateTab('attendance')}
-            className="p-4 bg-[#FFF9F1] hover:bg-white border border-[#E6D8C7] rounded-2xl shadow-2xs text-left transition-all group cursor-pointer active:scale-98"
+            className="p-3.5 bg-[#FFF9F1] hover:bg-white border border-[#E6D8C7] rounded-2xl shadow-2xs text-left transition-all group cursor-pointer active:scale-98"
           >
-            <div className="w-10 h-10 rounded-xl bg-[#EFE3D3] text-[#493222] flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
-              <CalendarCheck className="w-5 h-5" />
+            <div className="w-9 h-9 rounded-xl bg-[#EFE3D3] text-[#493222] flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
+              <CalendarCheck className="w-4 h-4" />
             </div>
-            <span className="font-bold text-xs text-[#38271C] block">Mark Attendance</span>
-            <span className="text-[10px] text-[#806A56] mt-0.5 block">Whole-class session</span>
+            <span className="font-bold text-xs text-[#38271C] block truncate">Attendance</span>
+            <span className="text-[10px] text-[#806A56] mt-0.5 block truncate">Daily session</span>
           </button>
 
-          {/* Action 2: Class Students */}
+          {/* Action 2: Schedule Planner */}
+          <button
+            onClick={() => onNavigateTab('schedule')}
+            className="p-3.5 bg-[#FFF9F1] hover:bg-white border border-[#E6D8C7] rounded-2xl shadow-2xs text-left transition-all group cursor-pointer active:scale-98"
+          >
+            <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-900 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
+              <Sparkles className="w-4 h-4 text-amber-700" />
+            </div>
+            <span className="font-bold text-xs text-[#38271C] block truncate">AI Schedule</span>
+            <span className="text-[10px] text-[#806A56] mt-0.5 block truncate">Upload & publish</span>
+          </button>
+
+          {/* Action 3: Class Students */}
           <button
             onClick={() => onNavigateTab('students')}
-            className="p-4 bg-[#FFF9F1] hover:bg-white border border-[#E6D8C7] rounded-2xl shadow-2xs text-left transition-all group cursor-pointer active:scale-98"
+            className="p-3.5 bg-[#FFF9F1] hover:bg-white border border-[#E6D8C7] rounded-2xl shadow-2xs text-left transition-all group cursor-pointer active:scale-98"
           >
-            <div className="w-10 h-10 rounded-xl bg-[#EAF2E9] text-[#668064] flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
-              <Users className="w-5 h-5" />
+            <div className="w-9 h-9 rounded-xl bg-[#EAF2E9] text-[#668064] flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
+              <Users className="w-4 h-4" />
             </div>
-            <span className="font-bold text-xs text-[#38271C] block">Class Students</span>
-            <span className="text-[10px] text-[#806A56] mt-0.5 block">{totalEnrolled} enrolled roster</span>
+            <span className="font-bold text-xs text-[#38271C] block truncate">Students</span>
+            <span className="text-[10px] text-[#806A56] mt-0.5 block truncate">{totalEnrolled} enrolled</span>
           </button>
 
-          {/* Action 3: Notify Teacher */}
+          {/* Action 4: Notify Teacher */}
           <button
             onClick={() => onNavigateTab('notify')}
-            className="p-4 bg-[#FFF9F1] hover:bg-white border border-[#E6D8C7] rounded-2xl shadow-2xs text-left transition-all group cursor-pointer active:scale-98"
+            className="p-3.5 bg-[#FFF9F1] hover:bg-white border border-[#E6D8C7] rounded-2xl shadow-2xs text-left transition-all group cursor-pointer active:scale-98"
           >
-            <div className="w-10 h-10 rounded-xl bg-[#F0F5FA] text-[#3A7BD5] flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
-              <BellRing className="w-5 h-5" />
+            <div className="w-9 h-9 rounded-xl bg-[#F0F5FA] text-[#3A7BD5] flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
+              <BellRing className="w-4 h-4" />
             </div>
-            <span className="font-bold text-xs text-[#38271C] block">Notify Teacher</span>
-            <span className="text-[10px] text-[#806A56] mt-0.5 block">Upcoming class alerts</span>
+            <span className="font-bold text-xs text-[#38271C] block truncate">Notify Teacher</span>
+            <span className="text-[10px] text-[#806A56] mt-0.5 block truncate">Class alerts</span>
           </button>
 
-          {/* Action 4: Attendance History */}
+          {/* Action 5: Attendance History */}
           <button
             onClick={() => onNavigateTab('history')}
-            className="p-4 bg-[#FFF9F1] hover:bg-white border border-[#E6D8C7] rounded-2xl shadow-2xs text-left transition-all group cursor-pointer active:scale-98"
+            className="p-3.5 bg-[#FFF9F1] hover:bg-white border border-[#E6D8C7] rounded-2xl shadow-2xs text-left transition-all group cursor-pointer active:scale-98 col-span-2 sm:col-span-1"
           >
-            <div className="w-10 h-10 rounded-xl bg-[#F8F0E5] text-[#806A56] flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
-              <History className="w-5 h-5" />
+            <div className="w-9 h-9 rounded-xl bg-[#F8F0E5] text-[#806A56] flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
+              <History className="w-4 h-4" />
             </div>
-            <span className="font-bold text-xs text-[#38271C] block">Attendance History</span>
-            <span className="text-[10px] text-[#806A56] mt-0.5 block">Past dates & PDFs</span>
+            <span className="font-bold text-xs text-[#38271C] block truncate">History</span>
+            <span className="text-[10px] text-[#806A56] mt-0.5 block truncate">Past dates & PDFs</span>
           </button>
         </div>
       </div>

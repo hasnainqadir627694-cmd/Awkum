@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Search,
   Filter,
@@ -7,18 +7,22 @@ import {
   Shield,
   UserX,
   UserCheck,
+  Briefcase,
   Edit3,
   X,
   Check,
   AlertTriangle,
+  Database,
+  RefreshCw,
 } from 'lucide-react';
 import { AdminUser, UserRole, UserStatus } from '../../data/adminData';
-import { Database, RefreshCw } from 'lucide-react';
+import { searchUsersInFirestoreOrServer, mergeUsers } from '../../lib/authService';
 
 interface UserManagementViewProps {
   users: AdminUser[];
   onUpdateUser: (userId: string, updates: Partial<AdminUser>) => void;
-  onOpenRoleAssignment: (user?: AdminUser | null) => void;
+  onNavigateToTeacherAssignments?: () => void;
+  onNavigateToCRAssignments?: () => void;
   onRefreshFirebase?: () => Promise<void> | void;
   isFirebaseSyncing?: boolean;
 }
@@ -26,7 +30,8 @@ interface UserManagementViewProps {
 export const UserManagementView: React.FC<UserManagementViewProps> = ({
   users,
   onUpdateUser,
-  onOpenRoleAssignment,
+  onNavigateToTeacherAssignments,
+  onNavigateToCRAssignments,
   onRefreshFirebase,
   isFirebaseSyncing = false,
 }) => {
@@ -36,10 +41,32 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
   const [actionMenuUser, setActionMenuUser] = useState<string | null>(null);
   const [confirmSuspendUser, setConfirmSuspendUser] = useState<AdminUser | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [discoveredUsers, setDiscoveredUsers] = useState<AdminUser[]>([]);
 
   const safeUsers = Array.isArray(users)
     ? users.filter((u): u is AdminUser => Boolean(u && typeof u === 'object' && u.id && u.role))
     : [];
+
+  // Live search querying Firestore and Firebase Auth when admin searches
+  useEffect(() => {
+    const q = searchTerm.trim();
+    if (!q || q.length < 2) {
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const found = await searchUsersInFirestoreOrServer(q);
+        if (Array.isArray(found) && found.length > 0) {
+          setDiscoveredUsers((prev) => mergeUsers(prev, found));
+        }
+      } catch (e) {}
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  const allAvailableUsers = mergeUsers(safeUsers, discoveredUsers);
 
   const handleManualRefresh = async () => {
     if (onRefreshFirebase) {
@@ -53,7 +80,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
   };
 
   // Filtered users
-  const filteredUsers = safeUsers.filter((u) => {
+  const filteredUsers = allAvailableUsers.filter((u) => {
     if (!u || !u.role) return false;
     // Role tab filtering
     if (activeTab === 'students' && u.role !== 'student' && !u.roles?.includes('student') && u.role !== 'cr') return false;
@@ -301,17 +328,31 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
 
                       {/* Dropdown Action Menu */}
                       {actionMenuUser === user.id && (
-                        <div className="absolute right-4 top-10 w-44 bg-[#FFF9F1] border border-[#E6D8C7] rounded-xl shadow-lg py-1 z-30 text-left">
-                          <button
-                            onClick={() => {
-                              onOpenRoleAssignment(user);
-                              setActionMenuUser(null);
-                            }}
-                            className="w-full px-3 py-1.5 text-xs text-[#38271C] hover:bg-[#F3E9DD] flex items-center gap-2 cursor-pointer"
-                          >
-                            <Shield className="w-3.5 h-3.5 text-[#668064]" />
-                            <span>Assign Role</span>
-                          </button>
+                        <div className="absolute right-4 top-10 w-48 bg-[#FFF9F1] border border-[#E6D8C7] rounded-xl shadow-lg py-1 z-30 text-left">
+                          {onNavigateToTeacherAssignments && (
+                            <button
+                              onClick={() => {
+                                onNavigateToTeacherAssignments();
+                                setActionMenuUser(null);
+                              }}
+                              className="w-full px-3 py-1.5 text-xs text-[#38271C] hover:bg-[#F3E9DD] flex items-center gap-2 cursor-pointer"
+                            >
+                              <Briefcase className="w-3.5 h-3.5 text-[#806A56]" />
+                              <span>Assign Teacher Load</span>
+                            </button>
+                          )}
+                          {onNavigateToCRAssignments && (
+                            <button
+                              onClick={() => {
+                                onNavigateToCRAssignments();
+                                setActionMenuUser(null);
+                              }}
+                              className="w-full px-3 py-1.5 text-xs text-[#38271C] hover:bg-[#F3E9DD] flex items-center gap-2 cursor-pointer"
+                            >
+                              <UserCheck className="w-3.5 h-3.5 text-[#3A7BD5]" />
+                              <span>Appoint Class CR</span>
+                            </button>
+                          )}
                           <button
                             onClick={() => {
                               setSelectedUser(user);

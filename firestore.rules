@@ -3,7 +3,7 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions
+    // Global Helper Functions
     function isSignedIn() {
       return request.auth != null;
     }
@@ -18,18 +18,54 @@ service cloud.firestore {
     function isOwner(userId) {
       return isSignedIn() && (
         request.auth.uid == userId ||
-        request.auth.token.email.replace('[@.]', '_') == userId
+        (resource != null && (resource.data.email == request.auth.token.email || resource.data.uid == request.auth.uid))
       );
     }
 
-    // Default deny catch-all
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Helper checking active CR assignment for a target class
+    function isCRForClass(targetClass) {
+      return isSignedIn() && (
+        isAdmin() || (
+          exists(/databases/$(database)/documents/crAssignments/$( 'cr_' + request.auth.token.email.replace('[@.]', '_') )) &&
+          get(/databases/$(database)/documents/crAssignments/$( 'cr_' + request.auth.token.email.replace('[@.]', '_') )).data.status == 'active' &&
+          (
+            targetClass == null || targetClass == '' ||
+            get(/databases/$(database)/documents/crAssignments/$( 'cr_' + request.auth.token.email.replace('[@.]', '_') )).data.assignedClass.lower() == targetClass.lower()
+          )
+        )
+      );
+    }
+
+    // Helper checking active Teacher assignment
+    function isTeacher() {
+      return isSignedIn() && (
+        isAdmin() || (
+          exists(/databases/$(database)/documents/teacherAssignments/$( 'teacher_' + request.auth.token.email.replace('[@.]', '_') )) &&
+          get(/databases/$(database)/documents/teacherAssignments/$( 'teacher_' + request.auth.token.email.replace('[@.]', '_') )).data.status == 'active'
+        )
+      );
+    }
+
+    // Default Deny Global Safety Net
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Diagnostics Probe Collection
+    // Diagnostics / Health Check Probes
     match /_health_checks/{document=**} {
-      allow read, write: if true;
+      allow read, write: if isSignedIn();
     }
 
     // 1. Role Assignments & CR Bindings (Strictly Master Admin Controlled)
@@ -41,6 +77,23 @@ service cloud.firestore {
         resource.data.email == request.auth.token.email
       );
       // ONLY Master Admin can grant, modify, or revoke CR assignments
+      allow write: if isAdmin();
+    }
+
+    match /teacherAssignments/{assignmentId} {
+      // Teachers can read their own assignment; Master Admin can read all
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        resource.data.uid == request.auth.uid ||
+        resource.data.email == request.auth.token.email
+      );
+      // ONLY Master Admin can grant, modify, or revoke Teacher assignments
+      allow write: if isAdmin();
+    }
+
+    match /subjectTeacherAssignments/{assignmentId} {
+      allow read: if isSignedIn();
+      // ONLY Master Admin can assign, replace, or revoke subject teachers
       allow write: if isAdmin();
     }
 
@@ -57,61 +110,133 @@ service cloud.firestore {
       // Normal students can register themselves with standard 'student' role only
       allow create: if isSignedIn() && (
         request.resource.data.role == 'student' &&
-        (!('isCR' in request.resource.data) || request.resource.data.isCR == false)
+        (!('isCR' in request.resource.data) || request.resource.data.isCR == false) &&
+        (!('crStatus' in request.resource.data) || request.resource.data.crStatus == 'none') &&
+        (!('teacherStatus' in request.resource.data) || request.resource.data.teacherStatus == 'none')
       );
       // Normal users can update non-privileged fields on their own profile
       allow update: if isOwner(userId) && (
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'roles', 'isCR', 'crStatus', 'assignedClass'])
+        !incoming().diff(existing()).affectedKeys().hasAny(['role', 'roles', 'isCR', 'crStatus', 'teacherStatus', 'assignedClass', 'assignedSubjects'])
       );
     }
 
-    // 3. Attendance Sessions
+    // 3. Attendance Sessions (Restricted to Authorized CRs for assigned class or Master Admin)
     match /attendanceSessions/{sessionId} {
       allow read: if isSignedIn();
-      // Allow write if Master Admin or signed in user
-      allow write: if isSignedIn();
+      // Write permitted ONLY to Master Admin or authorized active CR for that section
+      allow create: if isAdmin() || (
+        isSignedIn() &&
+        isCRForClass(incoming().classId)
+      );
+      allow update: if isAdmin() || (
+        isSignedIn() &&
+        isCRForClass(existing().classId) &&
+        // Non-admin CRs cannot un-finalize or tamper with finalized sheets
+        (existing().finalized != true || incoming().finalized == true)
+      );
+      allow delete: if isAdmin();
     }
 
-    // 4. Security Audit Logs (Append-only by authenticated users, read by Admin)
+    // 4. Student Assignment Submissions
+    match /submissions/{submissionId} {
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        isTeacher() ||
+        resource.data.studentEmail == request.auth.token.email ||
+        resource.data.studentUid == request.auth.uid
+      );
+      allow create: if isSignedIn() && (
+        isAdmin() ||
+        incoming().studentEmail == request.auth.token.email ||
+        incoming().studentUid == request.auth.uid
+      );
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (
+          (existing().studentEmail == request.auth.token.email || existing().studentUid == request.auth.uid) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['fileUrl', 'submittedAt', 'status'])
+        ) ||
+        isTeacher()
+      );
+      allow delete: if isAdmin();
+    }
+
+    // 5. Security Audit Logs (Append-only by authenticated users, read by Admin)
     match /auditLogs/{logId} {
       allow read: if isAdmin();
       allow create: if isSignedIn();
       allow update, delete: if false;
     }
 
-    // 5. University Branding & Appearance
+    // 6. University Branding & Portal Configuration
+    match /config/branding {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     match /branding/{docId} {
       allow read: if true;
       allow write: if isAdmin();
     }
 
-    // 6. Academic Materials & Portal Content
-    match /subjects/{subjectId} {
+    // 7. Academic Content & Schedules
+    match /classes/{classId} {
       allow read: if true;
       allow write: if isAdmin();
+    }
+
+    match /subjects/{subjectId} {
+      allow read: if true;
+      allow write: if isAdmin() || isTeacher();
     }
 
     match /documents/{documentId} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if isAdmin() || isTeacher();
+    }
+
+    match /assignments/{assignmentId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isTeacher();
     }
 
     match /schedules/{scheduleId} {
-      allow read: if true;
-      allow write: if isAdmin();
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || (
+        isSignedIn() &&
+        isCRForClass(incoming().classId)
+      );
+    }
+
+    match /scheduleDrafts/{draftId} {
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        isCRForClass(resource.data.classId)
+      );
+      allow write: if isAdmin() || (
+        isSignedIn() &&
+        isCRForClass(incoming().classId)
+      );
     }
 
     match /notices/{noticeId} {
       allow read: if true;
-      allow write: if isAdmin();
-    }
-
-    match /submissions/{submissionId} {
-      allow read, create, update: if isSignedIn();
+      allow write: if isAdmin() || isTeacher();
     }
 
     match /students/{studentId} {
-      allow read, write: if isSignedIn();
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // 8. User Verification Aggregates & Historical Backup Archives
+    match /aggregates/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /users_backup_archive/{docId} {
+      allow read, write: if isAdmin();
     }
   }
 }

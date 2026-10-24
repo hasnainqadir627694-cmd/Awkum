@@ -46,10 +46,28 @@ export const SubjectDetailView: React.FC<SubjectDetailViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
 
-  const subjectDocs = documents.filter((d) => d.subjectId === subject.id);
-  const subjectAsgs = assignments.filter((a) => a.subjectId === subject.id);
+  const isDocumentForSubject = (d: DocumentItem) => {
+    if (d.subjectId && d.subjectId === subject.id) return true;
+    if (subject.code && d.subjectId?.toLowerCase() === subject.code.toLowerCase()) return true;
+    if (d.subjectName && subject.name && d.subjectName.toLowerCase().trim() === subject.name.toLowerCase().trim()) return true;
+    if ((d as any).subject && subject.name && (d as any).subject.toLowerCase().trim() === subject.name.toLowerCase().trim()) return true;
+    if (subject.fullName && d.subjectName && d.subjectName.toLowerCase().trim() === subject.fullName.toLowerCase().trim()) return true;
+    return false;
+  };
+
+  const isAssignmentForSubject = (a: AssignmentItem) => {
+    if (a.subjectId && a.subjectId === subject.id) return true;
+    if (subject.code && a.subjectId?.toLowerCase() === subject.code.toLowerCase()) return true;
+    if (a.subjectName && subject.name && a.subjectName.toLowerCase().trim() === subject.name.toLowerCase().trim()) return true;
+    if ((a as any).subject && subject.name && (a as any).subject.toLowerCase().trim() === subject.name.toLowerCase().trim()) return true;
+    if (subject.fullName && a.subjectName && a.subjectName.toLowerCase().trim() === subject.fullName.toLowerCase().trim()) return true;
+    return false;
+  };
+
+  const subjectDocs = documents.filter(isDocumentForSubject);
+  const subjectAsgs = assignments.filter(isAssignmentForSubject);
   const subjectNotices = notices.filter(
-    (n) => n.subjectId === subject.id || !n.subjectId
+    (n) => n.subjectId === subject.id || !n.subjectId || (n.subjectId && subject.code && n.subjectId.toLowerCase() === subject.code.toLowerCase())
   );
 
   const filteredDocs = subjectDocs.filter((doc) => {

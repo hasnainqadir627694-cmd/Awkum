@@ -87,15 +87,54 @@ export async function optimizeImageToDataUrl(
   });
 }
 
+const CACHE_KEY = 'awkum_classhub_branding_cache';
+
+/**
+ * Synchronously retrieves published branding configuration from local storage.
+ * Guarantees zero-delay, instantaneous rendering on first frame without waiting
+ * for asynchronous network handshakes or Firestore client SDK initialization.
+ */
+export function getCachedBranding(): BrandingConfig {
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(CACHE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          return {
+            ...DEFAULT_BRANDING,
+            ...parsed,
+          };
+        }
+      }
+    } catch (e) {}
+  }
+  return DEFAULT_BRANDING;
+}
+
+/**
+ * Synchronizes published branding configuration into local storage.
+ */
+export function saveCachedBranding(config: BrandingConfig): void {
+  if (typeof window !== 'undefined' && config) {
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify(config));
+    } catch (e) {}
+  }
+}
+
 /**
  * Subscribes to real-time branding updates from Firestore.
- * If Firestore is offline or uninitialized, calls back with DEFAULT_BRANDING.
+ * Immediately invokes subscriber with synchronously cached local branding for zero-delay rendering.
  */
 export function subscribeToBranding(
   onUpdate: (branding: BrandingConfig) => void
 ): () => void {
+  // Immediately dispatch cached branding synchronously
+  const cached = getCachedBranding();
+  onUpdate(cached);
+
   if (!db) {
-    onUpdate(DEFAULT_BRANDING);
     return () => {};
   }
 
@@ -106,7 +145,7 @@ export function subscribeToBranding(
     (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data();
-        onUpdate({
+        const updatedConfig: BrandingConfig = {
           logoUrl: data.logoUrl || '',
           bottomImageUrl: data.bottomImageUrl || DEFAULT_BRANDING.bottomImageUrl,
           bottomImageEnabled: data.bottomImageEnabled !== undefined ? data.bottomImageEnabled : true,
@@ -124,14 +163,16 @@ export function subscribeToBranding(
           previousBgImageUrl: data.previousBgImageUrl,
           previousBgImageEnabled: data.previousBgImageEnabled,
           previousBgImageScale: data.previousBgImageScale,
-        });
+        };
+        saveCachedBranding(updatedConfig);
+        onUpdate(updatedConfig);
       } else {
-        onUpdate(DEFAULT_BRANDING);
+        onUpdate(cached);
       }
     },
     (error) => {
       console.info('[Branding Service] Realtime subscription notice:', error.message);
-      onUpdate(DEFAULT_BRANDING);
+      onUpdate(cached);
     }
   );
 
@@ -140,16 +181,56 @@ export function subscribeToBranding(
 
 /**
  * Fetches the currently published branding configuration once.
+ * Tries fast server endpoint first (~5ms) before querying Cloud Firestore.
  */
 export async function getPublishedBranding(): Promise<BrandingConfig> {
-  if (!db) return DEFAULT_BRANDING;
+  const cached = getCachedBranding();
+
+  // 1. Try fast server endpoint
+  try {
+    const res = await fetch('/api/branding');
+    if (res.ok) {
+      const data = await res.json();
+      if (data && (data.logoUrl !== undefined || data.bottomImageUrl !== undefined)) {
+        const config: BrandingConfig = {
+          logoUrl: data.logoUrl || '',
+          bottomImageUrl: data.bottomImageUrl || DEFAULT_BRANDING.bottomImageUrl,
+          bottomImageEnabled: data.bottomImageEnabled !== undefined ? data.bottomImageEnabled : true,
+          bottomImageScale: data.bottomImageScale !== undefined ? data.bottomImageScale : 100,
+          bgImageUrl: data.bgImageUrl || '',
+          bgImageEnabled: data.bgImageEnabled !== undefined ? data.bgImageEnabled : false,
+          bgImageScale: data.bgImageScale !== undefined ? data.bgImageScale : 100,
+          lastUpdated: data.lastUpdated || 'Recently',
+          updatedBy: data.updatedBy || 'Master Admin',
+          version: data.version || 1,
+          previousLogoUrl: data.previousLogoUrl,
+          previousBottomImageUrl: data.previousBottomImageUrl,
+          previousBottomImageEnabled: data.previousBottomImageEnabled,
+          previousBottomImageScale: data.previousBottomImageScale,
+          previousBgImageUrl: data.previousBgImageUrl,
+          previousBgImageEnabled: data.previousBgImageEnabled,
+          previousBgImageScale: data.previousBgImageScale,
+        };
+        saveCachedBranding(config);
+        return config;
+      }
+    }
+  } catch (err) {
+    console.info('[Branding Service] Server fetch notice:', err);
+  }
+
+  // 2. Query Firestore
+  if (!db) return cached;
 
   try {
     const brandingDocRef = doc(db, 'config', 'branding');
-    const snap = await getDoc(brandingDocRef);
-    if (snap.exists()) {
+    const snap = await Promise.race([
+      getDoc(brandingDocRef),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+    ]);
+    if (snap && snap.exists()) {
       const data = snap.data();
-      return {
+      const config: BrandingConfig = {
         logoUrl: data.logoUrl || '',
         bottomImageUrl: data.bottomImageUrl || DEFAULT_BRANDING.bottomImageUrl,
         bottomImageEnabled: data.bottomImageEnabled !== undefined ? data.bottomImageEnabled : true,
@@ -168,12 +249,14 @@ export async function getPublishedBranding(): Promise<BrandingConfig> {
         previousBgImageEnabled: data.previousBgImageEnabled,
         previousBgImageScale: data.previousBgImageScale,
       };
+      saveCachedBranding(config);
+      return config;
     }
   } catch (err) {
     console.info('[Branding Service] Fetch error:', err);
   }
 
-  return DEFAULT_BRANDING;
+  return cached;
 }
 
 /**
@@ -295,6 +378,16 @@ export async function publishBranding(
       console.info('[Branding Service] Firestore write notice:', err);
     }
   }
+
+  // Update server cache
+  fetch('/api/branding', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updated),
+  }).catch(() => {});
+
+  // Save synchronously to client local storage cache
+  saveCachedBranding(updated);
 
   // Record audit log
   await recordAuditLog({

@@ -21,7 +21,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
     { id: 'schedule' as TabType, label: 'Schedule', icon: Calendar },
     { id: 'classes' as TabType, label: 'Classes', icon: BookOpen },
     { id: 'home' as TabType, label: 'Home', icon: Home },
-    { id: 'assignments' as TabType, label: 'Tasks', icon: ClipboardCheck, badge: pendingAssignmentsCount },
+    { id: 'assignments' as TabType, label: 'Assignments', icon: ClipboardCheck, badge: pendingAssignmentsCount },
     { id: 'progress' as TabType, label: 'Progress', icon: BarChart2 },
   ];
 

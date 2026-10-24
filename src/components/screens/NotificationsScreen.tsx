@@ -104,7 +104,7 @@ export const NotificationsScreen: React.FC<NotificationsScreenProps> = ({
               No notifications
             </h4>
             <p className="text-xs text-[#806A56] mt-1">
-              You are all caught up with your classes and tasks.
+              You are all caught up with your classes and assignments.
             </p>
           </div>
         ) : (

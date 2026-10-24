@@ -211,9 +211,78 @@ Handles server-side upload of student assignment submissions and university bran
 
 ---
 
-## 4. Diagnostics & Health Endpoint
+## 4. Subject-Wise Teacher Assignment Endpoints
 
-### 4.1 System Health
+### 4.1 Assign Subject Teacher
+Binds an authenticated faculty account's permanent Firebase UID to a specific curriculum subject. Preserves other account roles (Student/CR) and guarantees learning resource continuity.
+
+- **Route**: `POST /api/admin/assign-subject-teacher`
+- **Headers**: `Content-Type: application/json`
+- **Request Body**:
+  ```json
+  {
+    "adminEmail": "hasnainbuilds724656@gmail.com",
+    "subjectId": "subj_cs101",
+    "teacherUid": "uid_abc123xyz",
+    "teacherEmail": "faculty@gmail.com",
+    "teacherName": "Engr. Tariq Khan"
+  }
+  ```
+- **Success Response** — `200 OK`:
+  ```json
+  {
+    "success": true,
+    "assignmentId": "sta_subj_cs101_uid_abc123xyz_1729680000",
+    "message": "Teacher Engr. Tariq Khan successfully assigned to subj_cs101."
+  }
+  ```
+
+### 4.2 Revoke Subject Teacher Access
+Revokes a faculty member's active management access from a specific subject. Never deletes or cascades removal to course documents, assignments, or student submissions.
+
+- **Route**: `POST /api/admin/revoke-subject-teacher`
+- **Headers**: `Content-Type: application/json`
+- **Request Body**:
+  ```json
+  {
+    "adminEmail": "hasnainbuilds724656@gmail.com",
+    "subjectId": "subj_cs101",
+    "reason": "Department curriculum reallocation"
+  }
+  ```
+- **Success Response** — `200 OK`:
+  ```json
+  {
+    "success": true,
+    "message": "Subject teacher access revoked for subj_cs101. All learning resources preserved."
+  }
+  ```
+
+### 4.3 Keep Subject Teacher Active
+Re-confirms active status for the currently assigned teacher without modifying historic IDs or re-uploading documents.
+
+- **Route**: `POST /api/admin/keep-subject-teacher-active`
+- **Headers**: `Content-Type: application/json`
+- **Request Body**:
+  ```json
+  {
+    "adminEmail": "hasnainbuilds724656@gmail.com",
+    "subjectId": "subj_cs101"
+  }
+  ```
+- **Success Response** — `200 OK`:
+  ```json
+  {
+    "success": true,
+    "message": "Active teacher status confirmed for subj_cs101."
+  }
+  ```
+
+---
+
+## 5. Diagnostics & Health Endpoint
+
+### 5.1 System Health
 Returns overall system status, active CR assignment count, and integration health.
 
 - **Route**: `GET /api/health`

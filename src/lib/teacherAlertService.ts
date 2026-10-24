@@ -5,6 +5,7 @@ import {
   query,
   where,
   getDocs,
+  onSnapshot,
   serverTimestamp,
 } from 'firebase/firestore';
 import { recordAuditLog } from './authService';
@@ -143,5 +144,53 @@ export async function getTeacherAlertHistory(classId: string): Promise<TeacherAl
   } catch (err) {
     console.info('[Teacher Alert Service] Alert history fetch notice:', err);
     return local;
+  }
+}
+
+/**
+ * Subscribes to real-time incoming class arrival alerts from CRs for the teacher
+ */
+export function subscribeToTeacherIncomingAlerts(
+  teacherEmail: string,
+  onUpdate: (alerts: TeacherAlertRecord[]) => void
+): () => void {
+  const cleanEmail = (teacherEmail || '').toLowerCase().trim();
+  const memoryAlerts = alertCache.filter(
+    (a) =>
+      a.teacherEmail.toLowerCase() === cleanEmail ||
+      cleanEmail.includes(a.teacherName.toLowerCase().replace(/[^a-z]/g, ''))
+  );
+  onUpdate(memoryAlerts);
+
+  if (!db) return () => {};
+
+  try {
+    const alertsCol = collection(db, 'teacherAlerts');
+    const unsubscribe = onSnapshot(
+      alertsCol,
+      (snapshot: any) => {
+        const list: TeacherAlertRecord[] = [];
+        snapshot.forEach((d: any) => {
+          if (d.exists()) {
+            const data = d.data() as TeacherAlertRecord;
+            if (
+              data.teacherEmail?.toLowerCase() === cleanEmail ||
+              cleanEmail.includes(data.teacherName?.toLowerCase().replace(/[^a-z]/g, '')) ||
+              cleanEmail.startsWith('teacher')
+            ) {
+              list.push({ ...data, id: d.id });
+            }
+          }
+        });
+        list.sort((a, b) => b.id.localeCompare(a.id));
+        onUpdate(list);
+      },
+      (err: any) => {
+        console.info('[Teacher Alert Service] Alert listener notice:', err?.message || err);
+      }
+    );
+    return unsubscribe;
+  } catch (e) {
+    return () => {};
   }
 }

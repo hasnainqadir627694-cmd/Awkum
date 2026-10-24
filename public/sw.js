@@ -34,8 +34,18 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Skip chrome-extension or non-http requests
-  if (!url.protocol.startsWith('http')) return;
+  // Skip chrome-extension, non-http, or non-GET requests (Cache API strictly requires GET)
+  if (!url.protocol.startsWith('http') || event.request.method !== 'GET') return;
+
+  // Skip API endpoints, Cloudinary, and Firebase / Google API requests from SW caching
+  if (
+    url.pathname.startsWith('/api/') ||
+    url.hostname.includes('googleapis.com') ||
+    url.hostname.includes('firebase') ||
+    url.hostname.includes('cloudinary.com')
+  ) {
+    return;
+  }
 
   // For navigation requests (HTML pages), try network first, fallback to cache
   if (event.request.mode === 'navigate') {

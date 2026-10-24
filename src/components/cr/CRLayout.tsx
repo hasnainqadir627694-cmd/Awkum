@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard,
   CalendarCheck,
+  Calendar,
   Users,
   History,
   BellRing,
@@ -26,6 +27,7 @@ import { CRAttendanceHistoryView } from './CRAttendanceHistoryView';
 import { CRNotifyTeacherView } from './CRNotifyTeacherView';
 import { CRAttendanceCorrectionModal } from './CRAttendanceCorrectionModal';
 import { CRProfileView } from './CRProfileView';
+import { CRSchedulePlannerView } from './CRSchedulePlannerView';
 
 interface CRLayoutProps {
   currentUser: AdminUser;
@@ -35,7 +37,7 @@ interface CRLayoutProps {
   onLogout: () => void;
 }
 
-export type CRTabType = 'dashboard' | 'attendance' | 'students' | 'history' | 'notify' | 'profile';
+export type CRTabType = 'dashboard' | 'attendance' | 'schedule' | 'students' | 'history' | 'notify' | 'profile';
 
 export const CRLayout: React.FC<CRLayoutProps> = ({
   currentUser,
@@ -167,6 +169,14 @@ export const CRLayout: React.FC<CRLayoutProps> = ({
             />
           )}
 
+          {activeTab === 'schedule' && (
+            <CRSchedulePlannerView
+              assignedClass={assignedClass}
+              crUser={{ id: currentUser.id, name: currentUser.name, email: currentUser.email }}
+              onBackToDashboard={() => setActiveTab('dashboard')}
+            />
+          )}
+
           {activeTab === 'students' && (
             <CRClassRosterView
               assignedClass={assignedClass}
@@ -214,7 +224,7 @@ export const CRLayout: React.FC<CRLayoutProps> = ({
               setActiveTab('dashboard');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition-all cursor-pointer ${
+            className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-xl transition-all cursor-pointer ${
               activeTab === 'dashboard' ? 'text-[#493222] font-bold' : 'text-[#806A56]'
             }`}
           >
@@ -227,7 +237,7 @@ export const CRLayout: React.FC<CRLayoutProps> = ({
               setActiveTab('attendance');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition-all cursor-pointer ${
+            className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-xl transition-all cursor-pointer ${
               activeTab === 'attendance' ? 'text-[#493222] font-bold' : 'text-[#806A56]'
             }`}
           >
@@ -237,10 +247,23 @@ export const CRLayout: React.FC<CRLayoutProps> = ({
 
           <button
             onClick={() => {
+              setActiveTab('schedule');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-xl transition-all cursor-pointer ${
+              activeTab === 'schedule' ? 'text-[#493222] font-bold' : 'text-[#806A56]'
+            }`}
+          >
+            <Calendar className={`w-5 h-5 ${activeTab === 'schedule' ? 'stroke-[2.2]' : 'stroke-[1.8]'}`} />
+            <span className="text-[10px]">Schedule</span>
+          </button>
+
+          <button
+            onClick={() => {
               setActiveTab('students');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition-all cursor-pointer ${
+            className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-xl transition-all cursor-pointer ${
               activeTab === 'students' ? 'text-[#493222] font-bold' : 'text-[#806A56]'
             }`}
           >
@@ -253,7 +276,7 @@ export const CRLayout: React.FC<CRLayoutProps> = ({
               setActiveTab('history');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition-all cursor-pointer ${
+            className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-xl transition-all cursor-pointer ${
               activeTab === 'history' ? 'text-[#493222] font-bold' : 'text-[#806A56]'
             }`}
           >
@@ -266,7 +289,7 @@ export const CRLayout: React.FC<CRLayoutProps> = ({
               setActiveTab('notify');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className={`flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition-all cursor-pointer ${
+            className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-xl transition-all cursor-pointer ${
               activeTab === 'notify' ? 'text-[#493222] font-bold' : 'text-[#806A56]'
             }`}
           >

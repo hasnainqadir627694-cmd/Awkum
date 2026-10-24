@@ -1,5 +1,6 @@
 import React from 'react';
 import { useBranding } from '../../context/BrandingContext';
+import { getCachedBranding } from '../../lib/brandingService';
 
 interface AwkumLogoProps {
   size?: 'sm' | 'md' | 'lg' | 'xl';
@@ -27,7 +28,7 @@ export const AwkumEmblem: React.FC<{
     // Graceful fallback if rendered outside BrandingProvider
   }
 
-  const activeLogo = overrideLogoUrl || brandingLogoUrl;
+  const activeLogo = overrideLogoUrl || brandingLogoUrl || getCachedBranding().logoUrl;
 
   if (activeLogo) {
     return (

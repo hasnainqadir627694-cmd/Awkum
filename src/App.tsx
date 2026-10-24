@@ -4,6 +4,7 @@ import {
   INITIAL_STUDENT,
   SUBJECTS,
   SCHEDULE_ITEMS,
+  ScheduleItem,
   DocumentItem,
   AssignmentItem,
   NotificationItem,
@@ -22,6 +23,11 @@ import { collection, addDoc, serverTimestamp, query, onSnapshot } from 'firebase
 import { motion, AnimatePresence } from 'motion/react';
 import { subscribeToUserAccount, markCRAccessAcknowledged, resolveUserRole } from './lib/authService';
 import { subscribeToStudentPersonalAttendance } from './lib/attendanceService';
+import { subscribeToCurriculumSubjects } from './lib/subjectService';
+import { subscribeToStudentSubmissions, TeacherSubmissionItem } from './lib/teacherService';
+import { SubjectInfo } from './data/portalData';
+import { cacheOfflineData, getCachedOfflineData } from './lib/offlineCacheService';
+import { subscribeToPublishedSchedule } from './lib/scheduleService';
 
 // Screens & Layouts
 import { LoginScreen } from './components/screens/LoginScreen';
@@ -37,11 +43,13 @@ import { UnavailablePortalScreen } from './components/screens/UnavailablePortalS
 import { CRLayout } from './components/cr/CRLayout';
 import { CRAccessGrantedModal } from './components/cr/CRAccessGrantedModal';
 import { TeacherLayout } from './components/teacher/TeacherLayout';
+import { EmailVerificationPendingScreen } from './components/screens/EmailVerificationPendingScreen';
 
 export default function App() {
   // Authentication & Role-Based Access State
   const [currentUser, setCurrentUser] = useState<AdminUser | null>(null);
   const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState<string | null>(null);
 
   // One Account, Two Experiences: Allows CR to seamlessly switch between Student Portal and CR Panel
   const [portalMode, setPortalModeState] = useState<'student' | 'cr'>(() => {
@@ -76,12 +84,16 @@ export default function App() {
 
   // Centralized Dynamic Application State (Clean from initial stage, no fake dummy data)
   const [student, setStudent] = useState<StudentProfile>(INITIAL_STUDENT);
+  const [curriculumSubjects, setCurriculumSubjects] = useState<SubjectInfo[]>(SUBJECTS);
   const [assignments, setAssignments] = useState<AssignmentItem[]>([]);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [notices, setNotices] = useState<NoticeItem[]>([]);
   const [attendanceRecords, setAttendanceRecords] = useState<DailyAttendanceRecord[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [reminders, setReminders] = useState<Record<string, { enabled: boolean; minutes: number }>>({});
+  const [studentSubmissions, setStudentSubmissions] = useState<TeacherSubmissionItem[]>([]);
+
+  const [publishedScheduleItems, setPublishedScheduleItems] = useState<ScheduleItem[]>(SCHEDULE_ITEMS);
 
   // Dynamic Real-time Calculations
   const unreadCount = notifications.filter((n) => !n.read).length;
@@ -96,16 +108,18 @@ export default function App() {
       ? Math.round((presentDaysCount / totalFinalizedDays) * 100)
       : 0;
 
-  // Authentic weekday schedule based on actual current day
+  // Authentic weekday schedule based on actual current day & real-time published schedule
   const dayNames: ('Sun' | 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat')[] = [
     'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'
   ];
   const currentDay = dayNames[new Date().getDay()];
   const isWeekend = currentDay === 'Sun' || currentDay === 'Sat';
 
+  const activeScheduleItems = publishedScheduleItems.length > 0 ? publishedScheduleItems : SCHEDULE_ITEMS;
+
   const todaySchedule = isWeekend
     ? []
-    : SCHEDULE_ITEMS.filter((item) => item.day === currentDay);
+    : activeScheduleItems.filter((item) => item.day === currentDay);
 
   const dueSoonAssignments = assignments.filter((item) => item.status === 'todo').slice(0, 2);
 
@@ -185,11 +199,15 @@ export default function App() {
       addDoc(collection(db, 'submissions'), {
         assignmentId,
         studentId: student.id,
+        studentEmail: student.email || currentUser?.email || '',
+        uid: currentUser?.uid || student.id,
         studentName: student.name,
         submittedContent: answerText,
         submittedFileName: fileName,
         fileUrl: fileUrl || null,
         storageProvider: fileUrl ? 'cloudinary' : 'local',
+        status: 'submitted',
+        submittedAt: formattedDate,
         timestamp: serverTimestamp(),
       }).catch((err) => {
         console.info('[Firestore] Submission recorded in student session. Remote sync awaiting authenticated user:', err?.message || err);
@@ -245,8 +263,26 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser?.email) {
         const cleanEmail = firebaseUser.email.trim().toLowerCase();
+        const isMasterAdmin = cleanEmail === 'hasnainbuilds724656@gmail.com';
+
+        // Check if student email is verified in Firebase Auth
+        if (!isMasterAdmin && !firebaseUser.emailVerified) {
+          setPendingVerificationEmail(cleanEmail);
+          setCurrentUser(null);
+          setUserRole(null);
+          return;
+        }
+
+        setPendingVerificationEmail(null);
+
         try {
           const resolution = await resolveUserRole(cleanEmail, undefined, firebaseUser.uid);
+          if (resolution.requiresVerification) {
+            setPendingVerificationEmail(resolution.unverifiedEmail || cleanEmail);
+            setCurrentUser(null);
+            setUserRole(null);
+            return;
+          }
           if (resolution.success && resolution.user && resolution.role) {
             handleLoginSuccess(resolution.user, resolution.role);
           }
@@ -334,11 +370,87 @@ export default function App() {
     }
   }, [currentUser?.crStatus, portalMode]);
 
+  // 2d. IndexedDB Offline Cache Synchronization for Student Portal
+  useEffect(() => {
+    getCachedOfflineData<AssignmentItem>('assignments').then((cached) => {
+      if (cached && cached.length > 0 && assignments.length === 0) {
+        setAssignments(cached);
+      }
+    });
+    getCachedOfflineData<DocumentItem>('documents').then((cached) => {
+      if (cached && cached.length > 0 && documents.length === 0) {
+        setDocuments(cached);
+      }
+    });
+    getCachedOfflineData<NoticeItem>('notices').then((cached) => {
+      if (cached && cached.length > 0 && notices.length === 0) {
+        setNotices(cached);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (assignments.length > 0) {
+      cacheOfflineData('assignments', assignments).catch(() => {});
+    }
+  }, [assignments]);
+
+  useEffect(() => {
+    if (documents.length > 0) {
+      cacheOfflineData('documents', documents).catch(() => {});
+    }
+  }, [documents]);
+
+  useEffect(() => {
+    if (notices.length > 0) {
+      cacheOfflineData('notices', notices).catch(() => {});
+    }
+  }, [notices]);
+
+  useEffect(() => {
+    if (activeScheduleItems.length > 0) {
+      cacheOfflineData('schedules', activeScheduleItems).catch(() => {});
+    }
+  }, [activeScheduleItems]);
+
+  // 2e. Real-time published schedule subscription for student's section/class
+  useEffect(() => {
+    if (!currentUser || userRole === 'master_admin') return;
+
+    const classId = currentUser.assignedClass || (student.section ? `BSSE ${student.section}` : 'BSSE 1A');
+
+    const unsubscribe = subscribeToPublishedSchedule(classId, (weeklySchedule) => {
+      if (weeklySchedule && Array.isArray(weeklySchedule.items) && weeklySchedule.items.length > 0) {
+        const mapped: ScheduleItem[] = weeklySchedule.items.map((item) => ({
+          id: item.id,
+          subjectId: item.subjectId,
+          subjectName: item.subjectName,
+          time: item.periodLabel || `${item.startTime} - ${item.endTime}`,
+          startTime: item.startTime,
+          endTime: item.endTime,
+          room: item.room || 'Department Lecture Hall',
+          day: item.day as any,
+          dateNum: 22,
+          teacher: item.teacherName || 'Faculty Instructor',
+          status: 'upcoming',
+        }));
+        setPublishedScheduleItems(mapped);
+        cacheOfflineData('schedules', mapped).catch(() => {});
+      }
+    });
+
+    return () => unsubscribe();
+  }, [currentUser?.email, currentUser?.assignedClass, student.section, userRole]);
+
   // 3. Real-time personal attendance subscription for enrolled student
   useEffect(() => {
     if (!currentUser || userRole === 'master_admin') return;
 
-    const classId = currentUser.assignedClass || 'BSSE 1A';
+    const classId = currentUser.assignedClass;
+    if (!classId) {
+      setAttendanceRecords([]);
+      return;
+    }
     const studentId = currentUser.studentId || currentUser.id;
     const email = currentUser.email;
 
@@ -349,18 +461,75 @@ export default function App() {
     return () => unsubscribe();
   }, [currentUser?.email, currentUser?.assignedClass, currentUser?.studentId, userRole]);
 
-  // 4. Real-time Firestore synchronization for assignments, documents, and announcements
+  // 4. Real-time Curriculum Subjects Subscription (Master Admin -> Portal sync)
+  useEffect(() => {
+    const unsubscribe = subscribeToCurriculumSubjects((remoteSubjs) => {
+      if (remoteSubjs && remoteSubjs.length > 0) {
+        const colors = ['#493222', '#668064', '#C84B31', '#B78103', '#3A7BD5', '#6A5ACD'];
+        const mapped: SubjectInfo[] = remoteSubjs.map((s, idx) => ({
+          id: s.id,
+          name: s.name,
+          fullName: s.name,
+          code: s.code,
+          teacher: s.assignedTeacher || 'Faculty Member',
+          teacherEmail: s.teacherEmail || 'faculty@awkum.edu.pk',
+          room: s.assignedClass ? `Class: ${s.assignedClass}` : 'Main Campus',
+          iconName: 'code',
+          creditHours: `${s.creditHours} Credit Hours`,
+          totalNotes: 0,
+          totalAssignments: 0,
+          color: colors[idx % colors.length],
+        }));
+        setCurriculumSubjects(mapped);
+      } else {
+        setCurriculumSubjects([]);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 5. Real-time Student Personal Submissions & Grades Subscription
+  useEffect(() => {
+    if (!currentUser || userRole === 'master_admin') return;
+    const ident = currentUser.studentId || currentUser.id || currentUser.email;
+    const unsubscribe = subscribeToStudentSubmissions(ident, (subs) => {
+      setStudentSubmissions(subs);
+    });
+    return () => unsubscribe();
+  }, [currentUser?.email, currentUser?.studentId, currentUser?.id, userRole]);
+
+  // 6. Real-time Firestore synchronization for assignments, documents, and announcements
   useEffect(() => {
     if (!currentUser || userRole === 'master_admin' || !db) return;
+
+    const studentClass = (currentUser.assignedClass || (student.section ? `BSSE ${student.section}` : 'BSSE 1A')).trim().toLowerCase();
 
     // A. Real assignments
     let unsubAssignments = () => {};
     try {
       unsubAssignments = onSnapshot(collection(db, 'assignments'), (snapshot) => {
         const list: AssignmentItem[] = [];
+        const submissionMap = new Map(studentSubmissions.map((s) => [s.assignmentId, s]));
+
         snapshot.forEach((d) => {
           if (d.exists()) {
-            list.push({ id: d.id, ...d.data() } as AssignmentItem);
+            const data = d.data();
+            // Isolate by targetClass if specified
+            if (data.targetClass && data.targetClass.trim().toLowerCase() !== studentClass) {
+              return;
+            }
+            const mySub = submissionMap.get(d.id);
+            list.push({
+              id: d.id,
+              ...data,
+              status: mySub ? mySub.status : data.status || 'todo',
+              grade: mySub?.grade !== undefined ? mySub.grade : data.grade,
+              feedback: mySub?.feedback || data.feedback,
+              submissionDate: mySub?.submittedAt || mySub?.timestamp || data.submissionDate,
+              submittedContent: mySub?.submittedContent || data.submittedContent,
+              submittedFileName: mySub?.submittedFileName || data.submittedFileName,
+              fileUrl: mySub?.fileUrl || data.fileUrl,
+            } as unknown as AssignmentItem);
           }
         });
         setAssignments(list);
@@ -376,7 +545,12 @@ export default function App() {
         const list: DocumentItem[] = [];
         snapshot.forEach((d) => {
           if (d.exists()) {
-            list.push({ id: d.id, ...d.data() } as DocumentItem);
+            const data = d.data();
+            // Isolate by targetClass if specified
+            if (data.targetClass && data.targetClass.trim().toLowerCase() !== studentClass) {
+              return;
+            }
+            list.push({ id: d.id, ...data } as DocumentItem);
           }
         });
         setDocuments(list);
@@ -393,6 +567,10 @@ export default function App() {
         snapshot.forEach((d) => {
           if (d.exists()) {
             const data = d.data();
+            // Isolate by targetClass if specified
+            if (data.targetClass && data.targetClass.trim().toLowerCase() !== studentClass) {
+              return;
+            }
             list.push({
               id: d.id,
               title: data.title || 'Official University Notice',
@@ -414,7 +592,7 @@ export default function App() {
       unsubDocuments();
       unsubNotices();
     };
-  }, [currentUser?.email, userRole]);
+  }, [currentUser?.email, currentUser?.assignedClass, student.section, userRole, studentSubmissions]);
 
   const handleLoginSuccess = (user: AdminUser, role: UserRole) => {
     setCurrentUser(user);
@@ -497,6 +675,30 @@ export default function App() {
     setAssignments([]);
     setDocuments([]);
   };
+
+  // 0. Email verification pending screen: blocks all access to portals until verified
+  if (pendingVerificationEmail) {
+    return (
+      <EmailVerificationPendingScreen
+        email={pendingVerificationEmail}
+        onVerified={async () => {
+          setPendingVerificationEmail(null);
+          if (auth?.currentUser) {
+            try {
+              const res = await resolveUserRole(auth.currentUser.email || '', undefined, auth.currentUser.uid);
+              if (res.success && res.user && res.role) {
+                handleLoginSuccess(res.user, res.role);
+              }
+            } catch (e) {}
+          }
+        }}
+        onBackToLogin={() => {
+          setPendingVerificationEmail(null);
+          handleLogout();
+        }}
+      />
+    );
+  }
 
   // 1. If not authenticated, render the shared Login Screen
   if (!currentUser || !userRole) {
@@ -622,12 +824,13 @@ export default function App() {
                       isCR={isUserCR(currentUser)}
                       assignedClass={currentUser?.assignedClass || 'BSSE 1A'}
                       onOpenCRPanel={() => setPortalMode('cr')}
+                      totalSubjectsCount={curriculumSubjects.length}
                     />
                   )}
 
                   {activeTab === 'schedule' && (
                     <ScheduleScreen
-                      scheduleItems={SCHEDULE_ITEMS}
+                      scheduleItems={activeScheduleItems}
                       reminders={reminders}
                       onToggleReminder={handleToggleReminder}
                     />
@@ -635,10 +838,10 @@ export default function App() {
 
                   {activeTab === 'classes' && (
                     <ClassesScreen
-                      subjects={SUBJECTS.map((s) => ({
+                      subjects={curriculumSubjects.map((s) => ({
                         ...s,
-                        totalNotes: documents.filter((d) => d.subjectId === s.id).length,
-                        totalAssignments: assignments.filter((a) => a.subjectId === s.id).length,
+                        totalNotes: documents.filter((d) => d.subjectId === s.id || d.subjectName?.toLowerCase() === s.name.toLowerCase()).length,
+                        totalAssignments: assignments.filter((a) => a.subjectId === s.id || a.subjectName?.toLowerCase() === s.name.toLowerCase()).length,
                       }))}
                       documents={documents}
                       assignments={assignments}
@@ -653,10 +856,10 @@ export default function App() {
                   {activeTab === 'assignments' && (
                     <AssignmentsScreen
                       assignments={assignments}
-                      subjects={SUBJECTS.map((s) => ({
+                      subjects={curriculumSubjects.map((s) => ({
                         ...s,
-                        totalNotes: documents.filter((d) => d.subjectId === s.id).length,
-                        totalAssignments: assignments.filter((a) => a.subjectId === s.id).length,
+                        totalNotes: documents.filter((d) => d.subjectId === s.id || d.subjectName?.toLowerCase() === s.name.toLowerCase()).length,
+                        totalAssignments: assignments.filter((a) => a.subjectId === s.id || a.subjectName?.toLowerCase() === s.name.toLowerCase()).length,
                       }))}
                       onOpenAssignment={(asg) => setActiveAssignment(asg)}
                     />

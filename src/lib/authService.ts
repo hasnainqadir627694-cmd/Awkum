@@ -1,7 +1,8 @@
-import { AdminUser, UserRole, UserStatus, INITIAL_USERS, AuditLogItem } from '../data/adminData';
+import { AdminUser, UserRole, UserStatus, INITIAL_USERS, AuditLogItem, UserAggregateStats } from '../data/adminData';
 import { db, auth } from './firebase';
 import {
   createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
   sendEmailVerification,
   signInWithPopup,
   GoogleAuthProvider,
@@ -11,6 +12,7 @@ import {
   getDoc,
   getDocs,
   setDoc,
+  deleteDoc,
   collection,
   query,
   where,
@@ -29,6 +31,8 @@ export interface AuthResolutionResult {
   role?: UserRole;
   error?: string;
   isSuspended?: boolean;
+  requiresVerification?: boolean;
+  unverifiedEmail?: string;
 }
 
 export interface StudentRegistrationInput {
@@ -37,6 +41,7 @@ export interface StudentRegistrationInput {
   email: string;
   password?: string;
   department: string;
+  assignedClass?: string;
 }
 
 // In-memory registered users pool, initialized with pre-existing directory
@@ -50,7 +55,14 @@ export function getRegisteredUsers(): AdminUser[] {
  * Normalizes a user record from Firestore document data
  */
 export function normalizeUserRecord(docId: string, data: any): AdminUser {
-  const email = (data?.email || (docId.includes('_') ? docId.replace(/_/g, '.') : docId)).trim();
+  const rawEmail = (
+    data?.email ||
+    data?.studentEmail ||
+    data?.userEmail ||
+    (docId.includes('@') ? docId : (docId.includes('_') ? docId.replace(/_/g, '.') : ''))
+  ).trim();
+
+  const email = rawEmail.includes('@') ? rawEmail : (data?.email || `${docId}@awkum.edu.pk`);
   const rawRole = (data?.role as string) || 'student';
   const crStatus = (data?.crStatus as ('active' | 'revoked' | 'none' | undefined)) || undefined;
   
@@ -65,10 +77,19 @@ export function normalizeUserRecord(docId: string, data: any): AdminUser {
     (crStatus !== 'revoked' && (data?.isCR || rawRole === 'cr' || (Array.isArray(data?.roles) && data.roles.includes('cr'))))
   );
 
+  const isMasterAdmin = email.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase() || docId === 'master_admin';
+  const emailVerified = Boolean(isMasterAdmin || data?.emailVerified === true);
+
+  const effectiveUid =
+    data?.uid ||
+    data?.firebaseUid ||
+    (!docId.includes('@') && !docId.includes('_') && docId.length >= 15 ? docId : undefined) ||
+    (docId.startsWith('uid_') ? docId : undefined);
+
   return {
     id: data?.id || `u-${docId}`,
-    uid: data?.uid || data?.firebaseUid || (docId.startsWith('uid_') ? docId : undefined),
-    name: data?.name || data?.fullName || 'Registered Student',
+    uid: effectiveUid,
+    name: data?.name || data?.fullName || (email.includes('@') ? email.split('@')[0].replace(/[._]/g, ' ') : 'Registered Student'),
     email: email,
     studentId: data?.studentId || data?.rollNo || data?.rollNumber || undefined,
     role: effectiveRole,
@@ -78,6 +99,8 @@ export function normalizeUserRecord(docId: string, data: any): AdminUser {
     isCR: isCR && crStatus !== 'revoked',
     crStatus: crStatus || (isCR ? 'active' : 'none'),
     status: (['active', 'pending', 'suspended'].includes(data?.status) ? data.status : 'active') as UserStatus,
+    emailVerified,
+    verifiedAt: data?.verifiedAt || (isMasterAdmin ? 'Oct 01, 2026' : undefined),
     registeredDate:
       data?.registeredDate ||
       (data?.createdAt?.toDate
@@ -86,7 +109,7 @@ export function normalizeUserRecord(docId: string, data: any): AdminUser {
     lastLogin: data?.lastLogin?.toDate ? data.lastLogin.toDate().toLocaleDateString() : data?.lastLogin,
     avatarUrl: data?.avatarUrl || `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200`,
     assignedSubjects: Array.isArray(data?.assignedSubjects) ? data.assignedSubjects : undefined,
-    assignedClass: data?.assignedClass || (isCR ? 'BSCS 3A' : undefined),
+    assignedClass: data?.assignedClass || undefined,
     phone: data?.phone,
     department: data?.department || 'Software Engineering',
     fatherName: data?.fatherName,
@@ -129,29 +152,50 @@ export function mergeUsers(baseUsers: AdminUser[], firestoreUsers: AdminUser[]):
 }
 
 /**
- * Fetches all registered users from Cloud Firestore users collection
+ * Fetches all registered users from Cloud Firestore users collection and backend sync.
+ * Never deletes users during read; safely reconciles all registered Firebase Auth identities.
  */
 export async function getAllRegisteredUsersFromFirestore(): Promise<AdminUser[]> {
-  if (!db) {
-    return registeredUsersPool;
+  const firestoreUsers: AdminUser[] = [];
+
+  if (db) {
+    try {
+      const snap = await getDocs(collection(db, 'users'));
+      snap.forEach((docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          const norm = normalizeUserRecord(docSnap.id, data);
+          if (norm.email && norm.email.includes('@')) {
+            firestoreUsers.push(norm);
+          }
+        }
+      });
+    } catch (err: any) {
+      console.info('[Auth Service] Fetch all users from Firestore notice:', err?.message || err);
+    }
   }
 
+  // Also query backend search endpoint to ensure newly registered Firebase Auth users are fetched
   try {
-    const snap = await getDocs(collection(db, 'users'));
-    const firestoreUsers: AdminUser[] = [];
-    snap.forEach((docSnap) => {
-      if (docSnap.exists()) {
-        firestoreUsers.push(normalizeUserRecord(docSnap.id, docSnap.data()));
+    const res = await fetch('/api/admin/search-users?q=');
+    if (res.ok) {
+      const serverData = await res.json();
+      if (Array.isArray(serverData?.users)) {
+        serverData.users.forEach((su: any) => {
+          if (su && su.email && su.email.includes('@')) {
+            firestoreUsers.push(normalizeUserRecord(su.id || su.uid, su));
+          }
+        });
       }
-    });
-
-    const merged = mergeUsers(INITIAL_USERS, firestoreUsers);
-    registeredUsersPool = merged;
-    return merged;
-  } catch (err: any) {
-    console.info('[Auth Service] Fetch all users from Firestore notice:', err?.message || err);
-    return registeredUsersPool;
+    }
+  } catch (e) {
+    // Non-blocking server sync
   }
+
+  const merged = mergeUsers(INITIAL_USERS, firestoreUsers);
+  registeredUsersPool = merged;
+  notifyUserSubscribers(merged);
+  return merged;
 }
 
 // Active subscribers to all registered users (Master Admin real-time synchronization)
@@ -169,14 +213,14 @@ export function notifyUserSubscribers(users: AdminUser[]) {
 
 /**
  * Subscribes to real-time updates for all registered users in Firebase Firestore.
- * Automatically keeps Master Admin in sync when new students register or roles change.
+ * Automatically keeps Master Admin in sync with verified accounts.
  */
 export function subscribeToAllUsers(
   onUpdate: (users: AdminUser[]) => void
 ): () => void {
   userSubscribers.add(onUpdate);
 
-  // Immediately notify with current in-memory pool so UI updates with 0 latency
+  // Immediately notify with current in-memory pool
   onUpdate([...registeredUsersPool]);
 
   if (!db) {
@@ -193,7 +237,11 @@ export function subscribeToAllUsers(
         const firestoreUsers: AdminUser[] = [];
         snapshot.forEach((docSnap) => {
           if (docSnap.exists()) {
-            firestoreUsers.push(normalizeUserRecord(docSnap.id, docSnap.data()));
+            const data = docSnap.data();
+            const norm = normalizeUserRecord(docSnap.id, data);
+            if (norm.email && norm.email.includes('@')) {
+              firestoreUsers.push(norm);
+            }
           }
         });
 
@@ -245,22 +293,47 @@ export async function validateCRAssignmentOnServer(
     console.info('[Auth Service] Server API check notice:', err);
   }
 
-  // 2. Query Firestore crAssignments collection
+  // 2. Query Firestore crAssignments collection & users collection with fast timeout
   if (db && (cleanEmail || cleanUid)) {
     try {
       const crCol = collection(db, 'crAssignments');
       if (cleanUid) {
-        const snap = await getDocs(query(crCol, where('uid', '==', cleanUid), where('status', '==', 'active')));
-        if (!snap.empty) {
+        const snap = await Promise.race([
+          getDocs(query(crCol, where('uid', '==', cleanUid), where('status', '==', 'active'))),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+        ]);
+        if (snap && !snap.empty) {
           const docData = snap.docs[0].data();
           return { isCR: true, assignedClass: docData.assignedClass, status: 'active', assignment: docData };
         }
       }
       if (cleanEmail) {
-        const snap = await getDocs(query(crCol, where('email', '==', cleanEmail), where('status', '==', 'active')));
-        if (!snap.empty) {
+        const snap = await Promise.race([
+          getDocs(query(crCol, where('email', '==', cleanEmail), where('status', '==', 'active'))),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+        ]);
+        if (snap && !snap.empty) {
           const docData = snap.docs[0].data();
           return { isCR: true, assignedClass: docData.assignedClass, status: 'active', assignment: docData };
+        }
+      }
+
+      // Check users collection in Firestore
+      const userDocRef = doc(db, 'users', (cleanEmail || cleanUid).replace(/[@.]/g, '_'));
+      const uSnap = await Promise.race([
+        getDoc(userDocRef),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+      ]);
+      if (uSnap && uSnap.exists()) {
+        const uData = uSnap.data();
+        if (
+          uData.crStatus !== 'revoked' &&
+          (uData.isCR || uData.role === 'cr' || (Array.isArray(uData.roles) && uData.roles.includes('cr')))
+        ) {
+          return { isCR: true, assignedClass: uData.assignedClass || 'BS SE', status: 'active', assignment: uData };
+        }
+        if (uData.crStatus === 'revoked') {
+          return { isCR: false, assignedClass: null, status: 'revoked' };
         }
       }
     } catch (err) {
@@ -268,7 +341,7 @@ export async function validateCRAssignmentOnServer(
     }
   }
 
-  return { isCR: false, assignedClass: null, status: 'revoked' };
+  return { isCR: false, assignedClass: null, status: 'none' };
 }
 
 /**
@@ -297,22 +370,52 @@ export async function validateTeacherAssignmentOnServer(
     console.info('[Auth Service] Server teacher API check notice:', err);
   }
 
-  // 2. Query Firestore teacherAssignments collection
+  // 2. Query Firestore teacherAssignments collection with fast timeout
   if (db && (cleanEmail || cleanUid)) {
     try {
       const teacherCol = collection(db, 'teacherAssignments');
       if (cleanUid) {
-        const snap = await getDocs(query(teacherCol, where('uid', '==', cleanUid), where('status', '==', 'active')));
-        if (!snap.empty) {
+        const snap = await Promise.race([
+          getDocs(query(teacherCol, where('uid', '==', cleanUid), where('status', '==', 'active'))),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+        ]);
+        if (snap && !snap.empty) {
           const docData = snap.docs[0].data();
           return { isTeacher: true, assignedSubjects: docData.assignedSubjects || [], status: 'active', assignment: docData };
         }
       }
       if (cleanEmail) {
-        const snap = await getDocs(query(teacherCol, where('email', '==', cleanEmail), where('status', '==', 'active')));
-        if (!snap.empty) {
+        const snap = await Promise.race([
+          getDocs(query(teacherCol, where('email', '==', cleanEmail), where('status', '==', 'active'))),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+        ]);
+        if (snap && !snap.empty) {
           const docData = snap.docs[0].data();
           return { isTeacher: true, assignedSubjects: docData.assignedSubjects || [], status: 'active', assignment: docData };
+        }
+      }
+
+      // Check users collection in Firestore
+      const userDocRef = doc(db, 'users', (cleanEmail || cleanUid).replace(/[@.]/g, '_'));
+      const uSnap = await Promise.race([
+        getDoc(userDocRef),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+      ]);
+      if (uSnap && uSnap.exists()) {
+        const uData = uSnap.data();
+        if (
+          uData.teacherStatus !== 'revoked' &&
+          (uData.role === 'teacher' || (Array.isArray(uData.roles) && uData.roles.includes('teacher')))
+        ) {
+          return {
+            isTeacher: true,
+            assignedSubjects: uData.assignedSubjects || [],
+            status: 'active',
+            assignment: uData,
+          };
+        }
+        if (uData.teacherStatus === 'revoked') {
+          return { isTeacher: false, assignedSubjects: [], status: 'revoked' };
         }
       }
     } catch (err) {
@@ -320,7 +423,7 @@ export async function validateTeacherAssignmentOnServer(
     }
   }
 
-  return { isTeacher: false, assignedSubjects: [], status: 'revoked' };
+  return { isTeacher: false, assignedSubjects: [], status: 'none' };
 }
 
 /**
@@ -387,8 +490,11 @@ export async function resolveUserRole(
       try {
         const userDocRef = doc(db, 'users', 'master_admin');
         const emailDocRef = doc(db, 'users', MASTER_ADMIN_EMAIL.replace(/[@.]/g, '_'));
-        const snap = await getDoc(userDocRef);
-        if (snap.exists()) {
+        const snap = await Promise.race([
+          getDoc(userDocRef),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+        ]);
+        if (snap && snap.exists()) {
           const data = snap.data();
           if (data.status === 'suspended') {
             return {
@@ -398,18 +504,20 @@ export async function resolveUserRole(
             };
           }
           adminRecord = { ...adminRecord, ...data } as AdminUser;
+        } else if (!snap) {
+          console.info('[Auth Service] Fast-tracking Master Admin authentication; background Firestore sync active');
         } else {
-          await setDoc(userDocRef, {
+          setDoc(userDocRef, {
             ...adminRecord,
             createdAt: serverTimestamp(),
             lastLogin: serverTimestamp(),
-          });
+          }).catch(() => {});
         }
-        await setDoc(emailDocRef, {
+        setDoc(emailDocRef, {
           ...adminRecord,
           createdAt: serverTimestamp(),
           lastLogin: serverTimestamp(),
-        }, { merge: true });
+        }, { merge: true }).catch(() => {});
       } catch (err) {
         console.info('[Auth Service] Master Admin Firestore check notice:', err);
       }
@@ -436,16 +544,123 @@ export async function resolveUserRole(
       (verifiedUid && u.uid === verifiedUid)
   );
 
-  if (!matchedUser && db && cleanId.includes('@')) {
+  if (!matchedUser && db) {
     try {
-      const userDocRef = doc(db, 'users', cleanId.replace(/[@.]/g, '_'));
-      const snap = await getDoc(userDocRef);
-      if (snap.exists()) {
-        matchedUser = normalizeUserRecord(snap.id, snap.data());
+      // 3a. Check by verified UID if available
+      if (verifiedUid) {
+        const uidSnap = await Promise.race([
+          getDoc(doc(db, 'users', verifiedUid)),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+        ]);
+        if (uidSnap && uidSnap.exists()) {
+          matchedUser = normalizeUserRecord(uidSnap.id, uidSnap.data());
+        }
+      }
+
+      // 3b. Check by email slug
+      if (!matchedUser && cleanId.includes('@')) {
+        const userDocRef = doc(db, 'users', cleanId.replace(/[@.]/g, '_'));
+        const snap = await Promise.race([
+          getDoc(userDocRef),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+        ]);
+        if (snap && snap.exists()) {
+          matchedUser = normalizeUserRecord(snap.id, snap.data());
+        }
+      }
+
+      // 3c. Query users collection by email
+      if (!matchedUser && cleanId.includes('@')) {
+        const emailQuerySnap = await Promise.race([
+          getDocs(query(collection(db, 'users'), where('email', '==', cleanId))),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+        ]);
+        if (emailQuerySnap && !emailQuerySnap.empty) {
+          const firstDoc = emailQuerySnap.docs[0];
+          matchedUser = normalizeUserRecord(firstDoc.id, firstDoc.data());
+        }
+      }
+
+      // 3d. Query users collection by uid
+      if (!matchedUser && verifiedUid) {
+        const uidQuerySnap = await Promise.race([
+          getDocs(query(collection(db, 'users'), where('uid', '==', verifiedUid))),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+        ]);
+        if (uidQuerySnap && !uidQuerySnap.empty) {
+          const firstDoc = uidQuerySnap.docs[0];
+          matchedUser = normalizeUserRecord(firstDoc.id, firstDoc.data());
+        }
       }
     } catch (err) {
       console.info('[Auth Service] Remote user lookup notice:', err);
     }
+  }
+
+  // 3e. Check backend server search endpoint if still not resolved
+  if (!matchedUser && cleanId.includes('@')) {
+    try {
+      const serverRes = await fetch(`/api/admin/search-users?q=${encodeURIComponent(cleanId)}`);
+      if (serverRes.ok) {
+        const serverData = await serverRes.json();
+        const found = serverData?.users?.find(
+          (u: any) => u.email?.toLowerCase() === cleanId || (verifiedUid && u.uid === verifiedUid)
+        );
+        if (found) {
+          matchedUser = normalizeUserRecord(found.id || found.uid, found);
+        }
+      }
+    } catch (e) {
+      // Non-blocking server check
+    }
+  }
+
+  // 3f. If user is authenticated in Firebase Auth (verifiedUid or auth.currentUser) but has no Firestore doc yet:
+  // Auto-initialize their official student profile idempotently!
+  if (!matchedUser && (verifiedUid || auth?.currentUser)) {
+    const liveAuth = auth?.currentUser;
+    const effectiveUid = verifiedUid || liveAuth?.uid || `uid_${cleanId.replace(/[@.]/g, '_')}`;
+    const displayName =
+      liveAuth?.displayName ||
+      cleanId.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    const roll = Math.floor(1000 + Math.random() * 9000);
+
+    const initialStudent: AdminUser = {
+      id: `u-${effectiveUid}`,
+      uid: effectiveUid,
+      name: displayName || 'Registered Student',
+      fatherName: 'Not Provided',
+      email: cleanId,
+      studentId: `26SE${roll}`,
+      role: 'student',
+      roles: ['student'],
+      status: 'active',
+      emailVerified: liveAuth?.emailVerified ?? false,
+      registeredDate: new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      }),
+      department: 'Software Engineering',
+      semester: '1st Semester',
+      avatarUrl: liveAuth?.photoURL || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200',
+      isFirebaseUser: true,
+    };
+
+    if (db) {
+      try {
+        setDoc(doc(db, 'users', effectiveUid), initialStudent, { merge: true }).catch(() => {});
+        setDoc(doc(db, 'users', cleanId.replace(/[@.]/g, '_')), initialStudent, { merge: true }).catch(() => {});
+      } catch (e) {}
+    }
+
+    registeredUsersPool = [initialStudent, ...registeredUsersPool.filter((u) => u.email.toLowerCase() !== cleanId)];
+    notifyUserSubscribers(registeredUsersPool);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('classhub_user_registered', { detail: initialStudent }));
+    }
+
+    matchedUser = initialStudent;
   }
 
   if (matchedUser) {
@@ -463,9 +678,6 @@ export async function resolveUserRole(
     }
 
     // Reconcile role strictly with server authorization:
-    // If server reports active Teacher assignment -> grant Teacher role
-    // Else if server reports active CR assignment -> grant CR role
-    // Else -> strictly set to student role
     if (teacherVerdict.isTeacher) {
       matchedUser = {
         ...matchedUser,
@@ -484,25 +696,79 @@ export async function resolveUserRole(
         assignedClass: crVerdict.assignedClass,
       };
     } else {
+      const preserveCR =
+        crVerdict.status !== 'revoked' &&
+        matchedUser.crStatus !== 'revoked' &&
+        Boolean(
+          matchedUser.isCR ||
+            matchedUser.role === 'cr' ||
+            (Array.isArray(matchedUser.roles) && matchedUser.roles.includes('cr'))
+        );
+
+      const preserveTeacher =
+        teacherVerdict.status !== 'revoked' &&
+        matchedUser.teacherStatus !== 'revoked' &&
+        Boolean(
+          matchedUser.role === 'teacher' ||
+            (Array.isArray(matchedUser.roles) && matchedUser.roles.includes('teacher'))
+        );
+
+      const effectiveRole = preserveTeacher ? 'teacher' : preserveCR ? 'cr' : 'student';
+      const effectiveRoles: UserRole[] = Array.from(
+        new Set<UserRole>([
+          'student',
+          ...(preserveCR ? (['cr'] as UserRole[]) : []),
+          ...(preserveTeacher ? (['teacher'] as UserRole[]) : []),
+        ])
+      );
+
       matchedUser = {
         ...matchedUser,
-        role: matchedUser.role === 'teacher' && matchedUser.teacherStatus === 'active' ? 'teacher' : 'student',
-        roles: matchedUser.role === 'teacher' && matchedUser.teacherStatus === 'active' ? ['teacher'] : ['student'],
-        isCR: false,
-        crStatus: crVerdict.status === 'revoked' ? 'revoked' : 'none',
-        teacherStatus: teacherVerdict.status === 'revoked' ? 'revoked' : (matchedUser.teacherStatus || 'none'),
+        role: effectiveRole,
+        roles: effectiveRoles,
+        isCR: preserveCR,
+        crStatus: crVerdict.status === 'revoked' || matchedUser.crStatus === 'revoked' ? 'revoked' : (preserveCR ? 'active' : 'none'),
+        teacherStatus: teacherVerdict.status === 'revoked' || matchedUser.teacherStatus === 'revoked' ? 'revoked' : (preserveTeacher ? 'active' : 'none'),
       };
+    }
+
+    const finalUser = matchedUser;
+
+    // Strict Email Verification Check: Only Master Admin is exempt; all student/teacher accounts must be verified in Firebase Auth
+    if (cleanId !== MASTER_ADMIN_EMAIL.toLowerCase()) {
+      const liveAuthUser = auth?.currentUser;
+      const isLiveEmailMatch = liveAuthUser?.email?.toLowerCase() === cleanId;
+      const isVerifiedInAuth = isLiveEmailMatch && liveAuthUser?.emailVerified === true;
+
+      if (liveAuthUser && isLiveEmailMatch && !isVerifiedInAuth) {
+        return {
+          success: false,
+          requiresVerification: true,
+          unverifiedEmail: cleanId,
+          error: 'Your email address is pending verification. Please verify your email before accessing the portal.',
+        };
+      }
+
+      if (isVerifiedInAuth) {
+        finalUser.emailVerified = true;
+        if (finalUser.uid && db) {
+          setDoc(doc(db, 'users', finalUser.uid), {
+            emailVerified: true,
+            verifiedAt: serverTimestamp(),
+          }, { merge: true }).catch(() => {});
+        }
+      }
     }
 
     // Update in memory pool
     registeredUsersPool = registeredUsersPool.map((u) =>
-      u.email.toLowerCase() === cleanId ? matchedUser! : u
+      u.email.toLowerCase() === cleanId ? finalUser : u
     );
 
     return {
       success: true,
-      user: matchedUser,
-      role: matchedUser.role,
+      user: finalUser,
+      role: finalUser.role,
     };
   }
 
@@ -514,10 +780,94 @@ export async function resolveUserRole(
 }
 
 /**
+ * Live search for users in memory, Firestore, and Firebase Authentication via server.
+ * Enables finding newly registered accounts instantly in Admin Panel.
+ */
+export async function searchUsersInFirestoreOrServer(queryStr: string): Promise<AdminUser[]> {
+  const cleanQ = queryStr.trim().toLowerCase();
+  const results: AdminUser[] = [];
+  const seenEmails = new Set<string>();
+
+  // 1. Search in-memory pool
+  registeredUsersPool.forEach((u) => {
+    if (!u || !u.email) return;
+    const matches =
+      !cleanQ ||
+      u.email.toLowerCase().includes(cleanQ) ||
+      u.name.toLowerCase().includes(cleanQ) ||
+      (u.studentId && u.studentId.toLowerCase().includes(cleanQ));
+    if (matches && !seenEmails.has(u.email.toLowerCase())) {
+      seenEmails.add(u.email.toLowerCase());
+      results.push(u);
+    }
+  });
+
+  // 2. Query Firestore directly if search term is provided
+  if (db && cleanQ) {
+    try {
+      if (cleanQ.includes('@')) {
+        const directSnap = await getDoc(doc(db, 'users', cleanQ.replace(/[@.]/g, '_')));
+        if (directSnap.exists()) {
+          const norm = normalizeUserRecord(directSnap.id, directSnap.data());
+          if (norm.email && !seenEmails.has(norm.email.toLowerCase())) {
+            seenEmails.add(norm.email.toLowerCase());
+            results.push(norm);
+          }
+        }
+      }
+
+      const qSnap = await getDocs(
+        query(collection(db, 'users'), where('email', '==', cleanQ))
+      );
+      qSnap.forEach((d) => {
+        if (d.exists()) {
+          const norm = normalizeUserRecord(d.id, d.data());
+          if (norm.email && !seenEmails.has(norm.email.toLowerCase())) {
+            seenEmails.add(norm.email.toLowerCase());
+            results.push(norm);
+          }
+        }
+      });
+    } catch (e) {
+      console.info('[Auth Service] Firestore search notice:', e);
+    }
+  }
+
+  // 3. Query server endpoint to catch any Firebase Auth users
+  try {
+    const res = await fetch(`/api/admin/search-users?q=${encodeURIComponent(cleanQ)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.users)) {
+        data.users.forEach((rawUser: any) => {
+          if (rawUser && rawUser.email) {
+            const norm = normalizeUserRecord(rawUser.id || rawUser.uid, rawUser);
+            if (norm.email && !seenEmails.has(norm.email.toLowerCase())) {
+              seenEmails.add(norm.email.toLowerCase());
+              results.push(norm);
+            }
+          }
+        });
+      }
+    }
+  } catch (e) {
+    // Non-blocking
+  }
+
+  // Merge newly discovered users into memory pool
+  if (results.length > 0) {
+    registeredUsersPool = mergeUsers(registeredUsersPool, results);
+    notifyUserSubscribers(registeredUsersPool);
+  }
+
+  return results;
+}
+
+/**
  * Registers a new student account:
- * - Collects Full Name, Father's Name, Email, Password, Department (Software Engineering)
- * - Automatically registers the student in 1st Semester (Fall 2026)
- * - Auto-generates Roll Number / Student ID (e.g. 26SE1042)
+ * - Creates Firebase Auth user and immediately dispatches official email verification link
+ * - Persists profile with Firebase UID as permanent primary identifier in users/{uid}
+ * - Returns verification pending state
  */
 export async function registerStudentAccount(
   input: StudentRegistrationInput
@@ -545,17 +895,6 @@ export async function registerStudentAccount(
     };
   }
 
-  // Check if account already exists
-  const existing = registeredUsersPool.find(
-    (u) => u.email.toLowerCase() === cleanEmail
-  );
-  if (existing) {
-    return {
-      success: false,
-      error: 'An account with this email address is already registered. Please sign in.',
-    };
-  }
-
   // Auto-generate roll number for 1st Semester Software Engineering
   const randomRoll = Math.floor(1000 + Math.random() * 9000);
   const studentId = `26SE${randomRoll}`;
@@ -572,18 +911,42 @@ export async function registerStudentAccount(
       }
     } catch (authErr: any) {
       if (authErr?.code === 'auth/email-already-in-use') {
-        return {
-          success: false,
-          error: 'An account with this email address already exists in Firebase Authentication. Please sign in.',
-        };
+        // Handle existing unverified account gracefully without creating duplicate accounts
+        try {
+          const cred = await signInWithEmailAndPassword(auth, cleanEmail, input.password);
+          if (!cred.user.emailVerified) {
+            await sendEmailVerification(cred.user);
+            return {
+              success: false,
+              requiresVerification: true,
+              unverifiedEmail: cleanEmail,
+              error: 'This account already exists in Firebase Authentication but is pending email verification. A new verification link has been sent to your email.',
+            };
+          } else {
+            return {
+              success: false,
+              error: 'An account with this email address already exists. Please sign in.',
+            };
+          }
+        } catch {
+          return {
+            success: false,
+            error: 'An account with this email address already exists in Firebase Authentication. Please sign in.',
+          };
+        }
       }
-      console.info('[Auth Service] Firebase Auth creation notice:', authErr?.code || authErr?.message);
+      return {
+        success: false,
+        error: authErr?.message || 'Failed to create account in Firebase Authentication.',
+      };
     }
   }
 
+  const effectiveUid = firebaseUid || auth?.currentUser?.uid || `uid_${cleanEmail.replace(/[@.]/g, '_')}`;
+
   const newStudent: AdminUser = {
     id: `u-student-${Date.now()}`,
-    uid: firebaseUid || auth?.currentUser?.uid || `uid_${cleanEmail.replace(/[@.]/g, '_')}`,
+    uid: effectiveUid,
     name: input.fullName.trim(),
     fatherName: input.fatherName.trim(),
     email: cleanEmail,
@@ -591,6 +954,7 @@ export async function registerStudentAccount(
     role: 'student',
     roles: ['student'],
     status: 'active',
+    emailVerified: false,
     registeredDate: new Date().toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
@@ -598,7 +962,7 @@ export async function registerStudentAccount(
     }),
     department: input.department || 'Software Engineering',
     semester: '1st Semester',
-    assignedClass: 'BSSE 1A',
+    assignedClass: input.assignedClass || undefined,
     avatarUrl: `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200`,
     isFirebaseUser: true,
   };
@@ -610,32 +974,37 @@ export async function registerStudentAccount(
     window.dispatchEvent(new CustomEvent('classhub_user_registered', { detail: newStudent }));
   }
 
-  // Persist to Cloud Firestore
+  // Persist to Cloud Firestore: PRIMARY document is users/{uid}
   if (db) {
     try {
-      const userDocRef = doc(db, 'users', cleanEmail.replace(/[@.]/g, '_'));
-      await setDoc(userDocRef, {
-        ...newStudent,
-        createdAt: serverTimestamp(),
-      }, { merge: true });
-
       if (firebaseUid) {
         const uidDocRef = doc(db, 'users', firebaseUid);
         await setDoc(uidDocRef, {
           ...newStudent,
           createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
         }, { merge: true });
       }
+
+      const emailDocRef = doc(db, 'users', cleanEmail.replace(/[@.]/g, '_'));
+      await setDoc(emailDocRef, {
+        ...newStudent,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
     } catch (err) {
       console.info('[Auth Service] User saved to session. Remote Firestore notice:', err);
     }
   }
 
+  // Asynchronously synchronize aggregate stats
+  reconcileUserRegistryAndAggregates().catch(() => {});
+
   // Record immutable audit log
   await recordAuditLog({
-    action: 'New Student Registered',
+    action: 'New Student Registered (Pending Verification)',
     performedBy: cleanEmail,
-    details: `${newStudent.name} S/D of ${newStudent.fatherName} (${newStudent.studentId}) registered in ${newStudent.department} (1st Semester)`,
+    details: `${newStudent.name} S/D of ${newStudent.fatherName} (${newStudent.studentId}) registered in ${newStudent.department}. Verification email dispatched.`,
     category: 'user',
     status: 'success',
   });
@@ -644,7 +1013,152 @@ export async function registerStudentAccount(
     success: true,
     user: newStudent,
     role: 'student',
+    requiresVerification: true,
+    unverifiedEmail: cleanEmail,
   };
+}
+
+/**
+ * Verifies current Firebase Auth user's email status by reloading the user.
+ * If verified, marks the profile as verified in Firestore and refreshes local state.
+ */
+export async function checkEmailVerificationStatus(): Promise<{
+  isVerified: boolean;
+  user?: AdminUser;
+  role?: UserRole;
+  error?: string;
+}> {
+  if (!auth?.currentUser) {
+    return { isVerified: false, error: 'No active session' };
+  }
+
+  await auth.currentUser.reload();
+  const isVerified = Boolean(auth.currentUser.emailVerified);
+  const uid = auth.currentUser.uid;
+  const email = (auth.currentUser.email || '').trim().toLowerCase();
+
+  if (!isVerified) {
+    return { isVerified: false };
+  }
+
+  // Update in Firestore
+  if (db && uid) {
+    try {
+      await setDoc(doc(db, 'users', uid), {
+        emailVerified: true,
+        verifiedAt: serverTimestamp(),
+      }, { merge: true });
+
+      if (email) {
+        await setDoc(doc(db, 'users', email.replace(/[@.]/g, '_')), {
+          emailVerified: true,
+          verifiedAt: serverTimestamp(),
+        }, { merge: true });
+      }
+    } catch (e) {
+      console.info('[Auth Service] Verification Firestore update notice:', e);
+    }
+  }
+
+  // Reconcile user role and return active user
+  const resolution = await resolveUserRole(email, undefined, uid);
+
+  // Update aggregate stats
+  reconcileUserRegistryAndAggregates().catch(() => {});
+
+  return {
+    isVerified: true,
+    user: resolution.user,
+    role: resolution.role,
+  };
+}
+
+/**
+ * Resends the official Firebase email verification link with rate limit safety.
+ */
+export async function resendVerificationEmail(): Promise<{ success: boolean; error?: string }> {
+  if (!auth?.currentUser) {
+    return { success: false, error: 'Authentication session expired. Please sign in again.' };
+  }
+
+  try {
+    await sendEmailVerification(auth.currentUser);
+    return { success: true };
+  } catch (err: any) {
+    if (err?.code === 'auth/too-many-requests') {
+      return { success: false, error: 'Verification emails were recently sent. Please wait 60 seconds before requesting another.' };
+    }
+    return { success: false, error: err?.message || 'Unable to send verification email.' };
+  }
+}
+
+/**
+ * Real-time subscription to backend-maintained user aggregate metrics.
+ */
+export function subscribeToUserAggregateStats(
+  onUpdate: (stats: UserAggregateStats) => void
+): () => void {
+  if (!db) {
+    onUpdate(computeLocalStats(registeredUsersPool));
+    return () => {};
+  }
+
+  const docRef = doc(db, 'aggregates', 'userStats');
+  return onSnapshot(
+    docRef,
+    (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data() as UserAggregateStats;
+        onUpdate(data);
+      } else {
+        const computed = computeLocalStats(registeredUsersPool);
+        onUpdate(computed);
+        setDoc(docRef, computed, { merge: true }).catch(() => {});
+      }
+    },
+    (err) => {
+      console.info('[Auth Service] Aggregates listener notice:', err.message);
+      onUpdate(computeLocalStats(registeredUsersPool));
+    }
+  );
+}
+
+export function computeLocalStats(usersList: AdminUser[]): UserAggregateStats {
+  const safe = Array.from(new Map(usersList.map((u) => [u.email.toLowerCase(), u])).values());
+  const verified = safe.filter((u) => u.emailVerified || u.email.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase()).length;
+  const unverified = safe.filter((u) => !u.emailVerified && u.email.toLowerCase() !== MASTER_ADMIN_EMAIL.toLowerCase()).length;
+  const students = safe.filter((u) => u.role === 'student' || u.roles?.includes('student')).length;
+  const crs = safe.filter((u) => u.isCR || u.role === 'cr' || u.roles?.includes('cr')).length;
+  const teachers = safe.filter((u) => u.role === 'teacher' || u.roles?.includes('teacher')).length;
+
+  return {
+    totalAccounts: safe.length,
+    verifiedAccounts: verified,
+    unverifiedAccounts: unverified,
+    studentCount: students,
+    crCount: crs,
+    teacherCount: teachers,
+    adminCount: 1,
+    lastReconciledAt: new Date().toISOString(),
+  };
+}
+
+export async function reconcileUserRegistryAndAggregates(): Promise<UserAggregateStats> {
+  const users = await getAllRegisteredUsersFromFirestore();
+  const stats = computeLocalStats(users);
+
+  if (db) {
+    try {
+      await setDoc(doc(db, 'aggregates', 'userStats'), {
+        ...stats,
+        lastReconciledAt: serverTimestamp(),
+      }, { merge: true });
+    } catch (e) {
+      console.info('[Auth Service] Sync aggregates notice:', e);
+    }
+  }
+
+  return stats;
 }
 
 /**
@@ -944,6 +1458,61 @@ export async function revokeCRAccess(
 }
 
 /**
+ * Updates a user account status (e.g. 'suspended' | 'active')
+ * Enforced by Master Admin only. Persists directly to Firestore and invalidates sessions.
+ */
+export async function updateUserAccountStatus(
+  adminEmail: string,
+  targetEmail: string,
+  newStatus: UserStatus
+): Promise<{ success: boolean; error?: string }> {
+  const cleanAdmin = adminEmail.trim().toLowerCase();
+  const cleanTarget = targetEmail.trim().toLowerCase();
+
+  if (cleanAdmin !== MASTER_ADMIN_EMAIL.toLowerCase()) {
+    return { success: false, error: 'Unauthorized: Only Master Administrator can change account status.' };
+  }
+
+  const targetUser = registeredUsersPool.find((u) => u.email.toLowerCase() === cleanTarget);
+  if (!targetUser) {
+    return { success: false, error: 'User account not found.' };
+  }
+
+  const updatedUser: AdminUser = {
+    ...targetUser,
+    status: newStatus,
+  };
+
+  registeredUsersPool = registeredUsersPool.map((u) =>
+    u.email.toLowerCase() === cleanTarget ? updatedUser : u
+  );
+  notifyUserSubscribers(registeredUsersPool);
+
+  if (db) {
+    try {
+      const userDocRef = doc(db, 'users', cleanTarget.replace(/[@.]/g, '_'));
+      await setDoc(userDocRef, { status: newStatus, statusUpdatedAt: serverTimestamp() }, { merge: true });
+
+      if (targetUser.uid && !targetUser.uid.startsWith('uid_')) {
+        await setDoc(doc(db, 'users', targetUser.uid), { status: newStatus, statusUpdatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
+      }
+    } catch (err: any) {
+      console.info('[Auth Service] Status update error:', err?.message || err);
+    }
+  }
+
+  await recordAuditLog({
+    action: newStatus === 'suspended' ? 'Account Suspended' : 'Account Reactivated',
+    performedBy: adminEmail,
+    details: `${targetUser.name} (${cleanTarget}) account status set to ${newStatus.toUpperCase()}`,
+    category: 'security',
+    status: newStatus === 'suspended' ? 'warning' : 'success',
+  });
+
+  return { success: true };
+}
+
+/**
  * Subscribes to real-time role updates for the logged in user.
  * Combines in-memory speed, authoritative server validation, and Cloud Firestore listeners
  * for both user documents and crAssignments records.
@@ -1075,7 +1644,7 @@ export function subscribeToUserAccount(
                 roles: ['student', 'cr'],
                 isCR: true,
                 crStatus: 'active',
-                assignedClass: data.assignedClass || activeUser.assignedClass || 'BSCS 3A',
+                assignedClass: data.assignedClass || activeUser.assignedClass || undefined,
               });
             } else if (data?.status === 'revoked') {
               applyUserUpdate({

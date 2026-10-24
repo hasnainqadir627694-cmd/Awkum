@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { BrandingConfig, DEFAULT_BRANDING } from '../data/adminData';
-import { subscribeToBranding, getPublishedBranding } from '../lib/brandingService';
+import { subscribeToBranding, getPublishedBranding, getCachedBranding, saveCachedBranding } from '../lib/brandingService';
 
 interface BrandingContextType {
   branding: BrandingConfig;
@@ -27,17 +27,20 @@ const BrandingContext = createContext<BrandingContextType>({
 });
 
 export const BrandingProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [branding, setBranding] = useState<BrandingConfig>(DEFAULT_BRANDING);
+  // Synchronous initialization from local storage cache prevents default branding flash on initial mount
+  const [branding, setBranding] = useState<BrandingConfig>(() => getCachedBranding());
 
   useEffect(() => {
-    // 1. Initial fetch
+    // 1. Initial fetch from fast server endpoint / Firestore
     getPublishedBranding().then((initial) => {
       setBranding(initial);
+      saveCachedBranding(initial);
     });
 
     // 2. Real-time Firestore subscription for multi-tier platform-wide sync
     const unsubscribe = subscribeToBranding((updated) => {
       setBranding(updated);
+      saveCachedBranding(updated);
     });
 
     return () => unsubscribe();

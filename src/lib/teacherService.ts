@@ -12,7 +12,7 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { AssignmentItem, DocumentItem, NoticeItem } from '../data/portalData';
-import { fileToDataUrl } from './cloudinary';
+import { uploadToCloudinary, fileToDataUrl } from './cloudinary';
 
 export interface TeacherSubmissionItem {
   id: string;
@@ -36,9 +36,13 @@ export interface TeacherSubmissionItem {
  * Subscribes to real-time assignments for an assigned subject
  */
 export function subscribeToTeacherAssignments(
-  subjectNameOrId: string,
+  subjectIdentifier: string | { id?: string; name?: string },
   onUpdate: (assignments: AssignmentItem[]) => void
 ): () => void {
+  const targetId = typeof subjectIdentifier === 'object' ? (subjectIdentifier.id || '') : (subjectIdentifier || '');
+  const targetName = typeof subjectIdentifier === 'object' ? (subjectIdentifier.name || '') : '';
+  const isAll = targetId === 'all';
+
   if (!db) {
     onUpdate([]);
     return () => {};
@@ -53,19 +57,23 @@ export function subscribeToTeacherAssignments(
         snapshot.forEach((d) => {
           if (d.exists()) {
             const data = d.data();
-            // Filter by subject if specified, or return all if subjectNameOrId is 'all'
-            if (
-              subjectNameOrId === 'all' ||
-              data.subjectId === subjectNameOrId ||
-              data.subject === subjectNameOrId ||
-              (data.subjectName && data.subjectName.toLowerCase().includes(subjectNameOrId.toLowerCase())) ||
-              (data.title && data.title.toLowerCase().includes(subjectNameOrId.toLowerCase()))
-            ) {
+            const sId = (data.subjectId || '').trim().toLowerCase();
+            const sSubj = (data.subject || '').trim().toLowerCase();
+            const sName = (data.subjectName || '').trim().toLowerCase();
+            const tId = targetId.trim().toLowerCase();
+            const tName = targetName.trim().toLowerCase();
+
+            const matches =
+              isAll ||
+              (tId && (sId === tId || sSubj === tId || sName === tId)) ||
+              (tName && (sId === tName || sSubj === tName || sName === tName || sName.includes(tName) || tName.includes(sName)));
+
+            if (matches) {
               list.push({
                 id: d.id,
                 title: data.title || 'Subject Assignment',
-                subjectName: data.subjectName || data.subject || subjectNameOrId,
-                subjectId: data.subjectId || subjectNameOrId,
+                subjectName: data.subjectName || data.subject || targetName || targetId || 'Subject Assignment',
+                subjectId: data.subjectId || targetId || 's-assigned',
                 teacher: data.authorName || data.teacher || 'Subject Instructor',
                 questionPreview: data.description || data.questionPreview || 'Course assignment',
                 fullInstructions: data.description || data.fullInstructions || '',
@@ -180,10 +188,13 @@ export async function createTeacherAssignment(payload: {
   if (payload.attachedFile) {
     attachedFileName = payload.attachedFile.name;
     try {
-      // Direct asset data URL upload for document preview and persistence
-      attachedFileUrl = await fileToDataUrl(payload.attachedFile);
+      const uploadRes = await uploadToCloudinary(payload.attachedFile, 'awkum_classhub/assignments');
+      attachedFileUrl = uploadRes.secureUrl || uploadRes.url;
     } catch (e) {
-      console.info('[Teacher Service] File reading notice:', e);
+      console.info('[Teacher Service] File upload notice:', e);
+      try {
+        attachedFileUrl = await fileToDataUrl(payload.attachedFile);
+      } catch (err) {}
     }
   }
 
@@ -226,6 +237,73 @@ export async function createTeacherAssignment(payload: {
 }
 
 /**
+ * Subscribes to submissions for a specific student across all assignments
+ * Allows students to see their own submission statuses, grades, and teacher feedback in real time
+ */
+export function subscribeToStudentSubmissions(
+  studentIdentifier: string,
+  onUpdate: (submissions: TeacherSubmissionItem[]) => void
+): () => void {
+  if (!db || !studentIdentifier) {
+    onUpdate([]);
+    return () => {};
+  }
+
+  const cleanId = studentIdentifier.trim().toLowerCase();
+
+  try {
+    const subCol = collection(db, 'submissions');
+    const unsubscribe = onSnapshot(
+      subCol,
+      (snapshot) => {
+        const list: TeacherSubmissionItem[] = [];
+        snapshot.forEach((d) => {
+          if (d.exists()) {
+            const data = d.data();
+            const matchesStudent =
+              (data.studentId && data.studentId.toLowerCase() === cleanId) ||
+              (data.studentEmail && data.studentEmail.toLowerCase() === cleanId) ||
+              (data.uid && data.uid === studentIdentifier);
+
+            if (matchesStudent) {
+              list.push({
+                id: d.id,
+                assignmentId: data.assignmentId,
+                studentId: data.studentId || studentIdentifier,
+                studentName: data.studentName || 'Student',
+                submittedContent: data.submittedContent || data.submittedText || '',
+                submittedFileName: data.submittedFileName || data.fileName || '',
+                fileUrl: data.fileUrl || undefined,
+                timestamp: data.timestamp?.toDate
+                  ? data.timestamp.toDate().toLocaleString()
+                  : data.submittedAt || 'Recent',
+                submittedAt: data.submittedAt || 'Recently',
+                grade: data.grade !== undefined ? data.grade : undefined,
+                maxMarks: data.maxMarks || 10,
+                feedback: data.feedback || '',
+                gradedAt: data.gradedAt || undefined,
+                gradedBy: data.gradedBy || undefined,
+                status: data.grade !== undefined ? 'graded' : 'submitted',
+              });
+            }
+          }
+        });
+        onUpdate(list);
+      },
+      (error) => {
+        console.info('[Teacher Service] Student submissions subscription notice:', error.message);
+        onUpdate([]);
+      }
+    );
+    return unsubscribe;
+  } catch (err) {
+    console.info('[Teacher Service] Student submissions subscription error:', err);
+    onUpdate([]);
+    return () => {};
+  }
+}
+
+/**
  * Saves or updates student grade and feedback for a submission
  */
 export async function saveStudentGrade(payload: {
@@ -240,17 +318,24 @@ export async function saveStudentGrade(payload: {
   if (db && payload.submissionId) {
     try {
       const subDocRef = doc(db, 'submissions', payload.submissionId);
-      await updateDoc(subDocRef, {
-        grade: payload.grade,
-        maxMarks: payload.maxMarks,
-        feedback: payload.feedback,
-        gradedAt: new Date().toISOString(),
-        gradedBy: payload.teacherName,
-        status: 'graded',
-      });
+      await setDoc(
+        subDocRef,
+        {
+          assignmentId: payload.assignmentId,
+          grade: Number(payload.grade),
+          maxMarks: Number(payload.maxMarks),
+          feedback: payload.feedback,
+          gradedAt: new Date().toISOString(),
+          gradedBy: payload.teacherName,
+          status: 'graded',
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
       return { success: true };
     } catch (err: any) {
       console.info('[Teacher Service] Save grade notice:', err);
+      return { success: false, error: err?.message || 'Failed to save grade.' };
     }
   }
 
@@ -268,12 +353,17 @@ export async function uploadTeacherDocument(payload: {
   file: File;
   teacherEmail: string;
   teacherName: string;
+  targetClass?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   let fileUrl = '';
   try {
-    fileUrl = await fileToDataUrl(payload.file);
+    const uploadRes = await uploadToCloudinary(payload.file, 'awkum_classhub/documents');
+    fileUrl = uploadRes.secureUrl || uploadRes.url;
   } catch (e) {
-    console.info('[Teacher Service] File read notice:', e);
+    console.info('[Teacher Service] File upload notice:', e);
+    try {
+      fileUrl = await fileToDataUrl(payload.file);
+    } catch (err) {}
   }
 
   const ext = payload.file.name.split('.').pop()?.toLowerCase() || '';
@@ -307,6 +397,7 @@ export async function uploadTeacherDocument(payload: {
     uploadDate,
     uploadedBy: payload.teacherName,
     teacherEmail: payload.teacherEmail,
+    targetClass: payload.targetClass || undefined,
     timestamp: serverTimestamp(),
   };
 
@@ -333,6 +424,7 @@ export async function createTeacherNotice(payload: {
   urgent: boolean;
   teacherEmail: string;
   teacherName: string;
+  targetClass?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const noticeData = {
     subjectId: payload.subjectId,
@@ -342,6 +434,7 @@ export async function createTeacherNotice(payload: {
     content: payload.content.trim(),
     urgent: payload.urgent,
     department: 'Department of Computer Science / SE',
+    targetClass: payload.targetClass || undefined,
     date: new Date().toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
@@ -368,9 +461,13 @@ export async function createTeacherNotice(payload: {
  * Subscribes to real-time documents for an assigned subject
  */
 export function subscribeToTeacherDocuments(
-  subjectNameOrId: string,
+  subjectIdentifier: string | { id?: string; name?: string },
   onUpdate: (documents: DocumentItem[]) => void
 ): () => void {
+  const targetId = typeof subjectIdentifier === 'object' ? (subjectIdentifier.id || '') : (subjectIdentifier || '');
+  const targetName = typeof subjectIdentifier === 'object' ? (subjectIdentifier.name || '') : '';
+  const isAll = targetId === 'all';
+
   if (!db) {
     onUpdate([]);
     return () => {};
@@ -385,16 +482,22 @@ export function subscribeToTeacherDocuments(
         snapshot.forEach((d) => {
           if (d.exists()) {
             const data = d.data();
-            if (
-              subjectNameOrId === 'all' ||
-              data.subjectId === subjectNameOrId ||
-              data.subject === subjectNameOrId ||
-              (data.subjectName && data.subjectName.toLowerCase().includes(subjectNameOrId.toLowerCase()))
-            ) {
+            const sId = (data.subjectId || '').trim().toLowerCase();
+            const sSubj = (data.subject || '').trim().toLowerCase();
+            const sName = (data.subjectName || '').trim().toLowerCase();
+            const tId = targetId.trim().toLowerCase();
+            const tName = targetName.trim().toLowerCase();
+
+            const matches =
+              isAll ||
+              (tId && (sId === tId || sSubj === tId || sName === tId)) ||
+              (tName && (sId === tName || sSubj === tName || sName === tName || sName.includes(tName) || tName.includes(sName)));
+
+            if (matches) {
               list.push({
                 id: d.id,
-                subjectId: data.subjectId || subjectNameOrId,
-                subjectName: data.subjectName || data.subject || subjectNameOrId,
+                subjectId: data.subjectId || targetId,
+                subjectName: data.subjectName || data.subject || targetName || 'Course Document',
                 title: data.title || 'Course Document',
                 category: data.category || 'Lectures',
                 fileType: data.fileType || 'pdf',
@@ -429,9 +532,13 @@ export function subscribeToTeacherDocuments(
  * Subscribes to real-time announcements for an assigned subject
  */
 export function subscribeToTeacherNotices(
-  subjectNameOrId: string,
+  subjectIdentifier: string | { id?: string; name?: string },
   onUpdate: (notices: NoticeItem[]) => void
 ): () => void {
+  const targetId = typeof subjectIdentifier === 'object' ? (subjectIdentifier.id || '') : (subjectIdentifier || '');
+  const targetName = typeof subjectIdentifier === 'object' ? (subjectIdentifier.name || '') : '';
+  const isAll = targetId === 'all';
+
   if (!db) {
     onUpdate([]);
     return () => {};
@@ -446,17 +553,23 @@ export function subscribeToTeacherNotices(
         snapshot.forEach((d) => {
           if (d.exists()) {
             const data = d.data();
-            if (
-              subjectNameOrId === 'all' ||
-              data.subjectId === subjectNameOrId ||
-              data.subject === subjectNameOrId ||
-              (data.subjectName && data.subjectName.toLowerCase().includes(subjectNameOrId.toLowerCase()))
-            ) {
+            const sId = (data.subjectId || '').trim().toLowerCase();
+            const sSubj = (data.subject || '').trim().toLowerCase();
+            const sName = (data.subjectName || '').trim().toLowerCase();
+            const tId = targetId.trim().toLowerCase();
+            const tName = targetName.trim().toLowerCase();
+
+            const matches =
+              isAll ||
+              (tId && (sId === tId || sSubj === tId || sName === tId)) ||
+              (tName && (sId === tName || sSubj === tName || sName === tName || sName.includes(tName) || tName.includes(sName)));
+
+            if (matches) {
               list.push({
                 id: d.id,
                 title: data.title || 'Subject Announcement',
-                subjectId: data.subjectId || subjectNameOrId,
-                subjectName: data.subjectName || subjectNameOrId,
+                subjectId: data.subjectId || targetId,
+                subjectName: data.subjectName || targetName || 'Subject Announcement',
                 department: data.department || 'Department of Computer Science',
                 date: data.date || 'Recent',
                 urgent: !!data.urgent,

@@ -9,10 +9,30 @@
     <meta property="og:description" content="Production-quality mobile-first Student Portal for Abdul Wali Khan University Mardan (AWKUM). Manage schedules, documents, assignments, attendance, and campus updates." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+
+    <!-- PWA Theme & Mobile Capable Meta Tags -->
+    <meta name="theme-color" content="#493222" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ClassHub" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="manifest" href="/manifest.json" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="manifest" href="/manifest.json">
+
+    <!-- Immediate Early Capture of PWA Install Prompt -->
+    <script>
+      window.__deferredPWAInstallPrompt = null;
+      window.addEventListener('beforeinstallprompt', function(e) {
+        e.preventDefault();
+        window.__deferredPWAInstallPrompt = e;
+        window.dispatchEvent(new CustomEvent('pwa_prompt_ready'));
+      });
+    </script>
   </head>
   <body class="bg-[#F8F0E5] text-[#38271C] antialiased selection:bg-[#493222] selection:text-[#FFF9F1]">
     <div id="root"></div>

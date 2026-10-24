@@ -32,8 +32,8 @@ export const TeacherStudentsView: React.FC<TeacherStudentsViewProps> = ({
       <div className="bg-[#FFF9F1] border border-[#E6D8C7] rounded-3xl p-5 shadow-2xs space-y-3">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold text-[#38271C]">
-              Enrolled Students ({selectedSubject.name})
+            <h1 className="text-xl font-extrabold text-[#38271C]">
+              Enrolled Students — <span className="text-[#493222] underline decoration-amber-600/40">{selectedSubject.name}</span>
             </h1>
             <p className="text-xs text-[#806A56] mt-0.5">
               Official roster for {selectedSubject.code} · Total Enrolled: {roster.length}

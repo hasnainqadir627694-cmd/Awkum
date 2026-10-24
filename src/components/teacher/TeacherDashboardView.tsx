@@ -1,6 +1,7 @@
-import { Plus, Upload, Bell, ChevronRight, FileText, CheckCircle2, Clock } from 'lucide-react';
+import { Plus, Upload, Bell, ChevronRight, FileText, CheckCircle2, Clock, BellRing, Sparkles } from 'lucide-react';
 import { AdminUser, SubjectConfig } from '../../data/adminData';
 import { AssignmentItem, NoticeItem, DocumentItem } from '../../data/portalData';
+import { TeacherAlertRecord } from '../../lib/teacherAlertService';
 
 interface TeacherDashboardViewProps {
   teacher: AdminUser;
@@ -11,6 +12,7 @@ interface TeacherDashboardViewProps {
   documents: DocumentItem[];
   notices: NoticeItem[];
   totalEnrolledStudents: number;
+  incomingAlerts?: TeacherAlertRecord[];
   onNavigateTab: (tab: 'dashboard' | 'students' | 'documents' | 'assignments' | 'notices' | 'profile') => void;
   onOpenCreateAssignment: () => void;
   onOpenUploadDocument: () => void;
@@ -27,6 +29,7 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
   documents,
   notices,
   totalEnrolledStudents,
+  incomingAlerts = [],
   onNavigateTab,
   onOpenCreateAssignment,
   onOpenUploadDocument,
@@ -75,31 +78,54 @@ export const TeacherDashboardView: React.FC<TeacherDashboardViewProps> = ({
           )}
         </div>
 
-        {/* Selected Subject Banner Card (Matching Screen 2 in Reference) */}
-        <div className="p-4 bg-[#493222] text-[#FFF9F1] rounded-2xl flex items-center justify-between gap-3 shadow-sm">
+        {/* Selected Subject Banner Card (Proper Visible Subject Name in Bold) */}
+        <div className="p-4.5 bg-[#493222] text-[#FFF9F1] rounded-2xl flex items-center justify-between gap-3 shadow-md border border-[#38271C]">
           <div className="flex items-center gap-3.5">
-            <div className="w-11 h-11 rounded-xl bg-amber-400/20 text-amber-300 flex items-center justify-center font-mono font-bold text-lg shrink-0 border border-amber-400/30">
-              {selectedSubject.code.slice(0, 2)}
+            <div className="w-12 h-12 rounded-xl bg-amber-400/20 text-amber-300 flex items-center justify-center font-mono font-bold text-lg shrink-0 border border-amber-400/30">
+              {selectedSubject.code ? selectedSubject.code.slice(0, 3) : 'SUB'}
             </div>
             <div>
               <span className="text-[10px] uppercase font-bold tracking-wider text-amber-300 block">
-                Active Subject Workspace
+                Assigned Subject Workspace
               </span>
-              <h2 className="text-base sm:text-lg font-bold tracking-wide">
+              <h2 className="text-lg sm:text-xl font-extrabold text-[#FFF9F1] tracking-tight drop-shadow-xs">
                 {selectedSubject.name}
               </h2>
-              <span className="text-xs text-[#E6D8C7] block">
-                {selectedSubject.code} · BS Software Engineering / CS
+              <span className="text-xs text-[#E6D8C7] font-medium block mt-0.5">
+                {selectedSubject.code} · AWKUM Department of Computer Science / SE
               </span>
             </div>
           </div>
 
           <div className="text-right shrink-0 hidden sm:block">
-            <span className="px-2.5 py-1 bg-amber-400/20 text-amber-300 text-xs font-bold rounded-lg border border-amber-400/30">
-              {selectedSubject.creditHours} Credit Hours
+            <span className="px-3 py-1.5 bg-amber-400/20 text-amber-300 text-xs font-extrabold rounded-xl border border-amber-400/30">
+              {selectedSubject.creditHours || 3} Credit Hours
             </span>
           </div>
         </div>
+
+        {/* Real-time CR Incoming Arrival Reminder */}
+        {incomingAlerts.length > 0 && (
+          <div className="p-4 bg-[#FFF3CD] border border-[#F7E19C] rounded-2xl flex items-start gap-3 text-xs text-[#856404] animate-in fade-in">
+            <BellRing className="w-5 h-5 text-[#B78103] shrink-0 mt-0.5 animate-bounce" />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-[#38271C]">
+                  Class Arrival Reminder from CR ({incomingAlerts[0].sentByCRName})
+                </span>
+                <span className="text-[10px] text-[#806A56] font-mono">{incomingAlerts[0].sentAt}</span>
+              </div>
+              <p className="mt-1 text-xs text-[#38271C] font-medium leading-relaxed">
+                {incomingAlerts[0].message}
+              </p>
+              <div className="flex items-center gap-3 mt-2 text-[11px] font-semibold text-[#806A56]">
+                <span>Class: {incomingAlerts[0].classId}</span>
+                <span>· Room: {incomingAlerts[0].room}</span>
+                <span>· Scheduled: {incomingAlerts[0].scheduledTime}</span>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 2. Key Metrics Grid (Screen 2 in Reference) */}

@@ -14,11 +14,13 @@
         "roles": { "type": "array" },
         "isCR": { "type": "boolean" },
         "crStatus": { "type": "string", "enum": ["active", "revoked", "none"] },
+        "teacherStatus": { "type": "string", "enum": ["active", "revoked", "none"] },
         "status": { "type": "string", "enum": ["active", "pending", "suspended"] },
         "registeredDate": { "type": "string" },
         "department": { "type": "string" },
         "semester": { "type": "string" },
         "assignedClass": { "type": "string" },
+        "assignedSubjects": { "type": "array" },
         "avatarUrl": { "type": "string" }
       },
       "required": ["email", "role", "status"]
@@ -43,9 +45,46 @@
       },
       "required": ["uid", "email", "assignedClass", "status", "grantedAt", "grantedBy"]
     },
+    "TeacherAssignment": {
+      "title": "TeacherAssignment",
+      "description": "Server-authoritative, revocable Faculty Teacher Panel assignment bound to verified Gmail and Firebase Auth UID",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "uid": { "type": "string", "description": "Verified Firebase Auth UID" },
+        "email": { "type": "string", "format": "email", "description": "Verified Faculty Gmail" },
+        "name": { "type": "string" },
+        "panelType": { "type": "string" },
+        "assignedSubjects": { "type": "array" },
+        "assignedClass": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "revoked"] },
+        "grantedAt": { "type": "string" },
+        "grantedBy": { "type": "string" },
+        "revokedAt": { "type": "string" },
+        "revokedBy": { "type": "string" },
+        "revocationReason": { "type": "string" }
+      },
+      "required": ["uid", "email", "assignedSubjects", "status", "grantedAt", "grantedBy"]
+    },
+    "RoleAssignment": {
+      "title": "RoleAssignment",
+      "description": "Immutable audit log of historical role grants and updates",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string", "format": "email" },
+        "userName": { "type": "string" },
+        "role": { "type": "string" },
+        "assignedClass": { "type": "string" },
+        "assignedSubjects": { "type": "array" },
+        "assignedBy": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["userEmail", "role", "assignedBy"]
+    },
     "AttendanceSession": {
       "title": "AttendanceSession",
-      "description": "Daily whole-class attendance record managed by the authorized Class Representative",
+      "description": "Daily whole-class attendance record managed by the authorized Class Representative for their assigned class",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
@@ -68,6 +107,44 @@
       },
       "required": ["classId", "date", "recordedByEmail", "finalized"]
     },
+    "Submission": {
+      "title": "Submission",
+      "description": "Student assignment submission record with attachments, feedback, and grading",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "assignmentId": { "type": "string" },
+        "studentUid": { "type": "string" },
+        "studentEmail": { "type": "string", "format": "email" },
+        "studentName": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "fileUrl": { "type": "string" },
+        "submittedAt": { "type": "string" },
+        "grade": { "type": "string" },
+        "feedback": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["assignmentId", "studentEmail", "fileUrl"]
+    },
+    "BrandingConfig": {
+      "title": "BrandingConfig",
+      "description": "University logo and portal customization configuration",
+      "type": "object",
+      "properties": {
+        "logoUrl": { "type": "string" },
+        "bottomImageUrl": { "type": "string" },
+        "bottomImageEnabled": { "type": "boolean" },
+        "bottomImageScale": { "type": "number" },
+        "bgImageUrl": { "type": "string" },
+        "bgImageEnabled": { "type": "boolean" },
+        "bgImageScale": { "type": "number" },
+        "lastUpdated": { "type": "string" },
+        "updatedBy": { "type": "string" },
+        "version": { "type": "number" }
+      },
+      "required": ["logoUrl", "version"]
+    },
     "AuditLog": {
       "title": "AuditLog",
       "description": "Security audit record for role assignment, revocation, or administrative actions",
@@ -81,21 +158,126 @@
         "category": { "type": "string" },
         "status": { "type": "string" }
       },
-      "required": ["action", "performedBy", "details", "timestamp"]
+      "required": ["action", "performedBy", "details"]
+    },
+    "WeeklySchedule": {
+      "title": "WeeklySchedule",
+      "description": "Official structured weekly timetable for a class/section extracted via Gemini AI and confirmed by CR",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "classId": { "type": "string" },
+        "semester": { "type": "string" },
+        "status": { "type": "string", "enum": ["draft", "published"] },
+        "publishedVersion": { "type": "number" },
+        "publishedAt": { "type": "string" },
+        "items": { "type": "array" },
+        "days": { "type": "array" },
+        "warnings": { "type": "array" }
+      },
+      "required": ["classId", "status", "items"]
+    },
+    "UserAggregateStats": {
+      "title": "UserAggregateStats",
+      "description": "Real-time user verification and registry aggregate statistics for administrative dashboard",
+      "type": "object",
+      "properties": {
+        "totalAccounts": { "type": "number" },
+        "verifiedAccounts": { "type": "number" },
+        "unverifiedAccounts": { "type": "number" },
+        "studentCount": { "type": "number" },
+        "crCount": { "type": "number" },
+        "teacherCount": { "type": "number" },
+        "adminCount": { "type": "number" },
+        "lastReconciledAt": { "type": "string" }
+      },
+      "required": ["totalAccounts", "verifiedAccounts", "unverifiedAccounts"]
+    },
+    "SubjectTeacherAssignment": {
+      "title": "SubjectTeacherAssignment",
+      "description": "Subject-scoped faculty teacher assignment linking a verified teacher UID to an exact subject",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "subjectCode": { "type": "string" },
+        "assignedClass": { "type": "string" },
+        "teacherUid": { "type": "string" },
+        "teacherEmail": { "type": "string", "format": "email" },
+        "teacherName": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "revoked"] },
+        "assignedBy": { "type": "string" },
+        "assignedAt": { "type": "string" },
+        "revokedBy": { "type": "string" },
+        "revokedAt": { "type": "string" },
+        "revocationReason": { "type": "string" },
+        "lastConfirmedActiveAt": { "type": "string" }
+      },
+      "required": ["subjectId", "teacherUid", "teacherEmail", "status", "assignedBy", "assignedAt"]
+    },
+    "UserBackupArchive": {
+      "title": "UserBackupArchive",
+      "description": "Archived snapshot of legacy, duplicate, or orphaned user profiles for audit and recovery",
+      "type": "object",
+      "properties": {
+        "originalDocId": { "type": "string" },
+        "email": { "type": "string" },
+        "archiveReason": { "type": "string" },
+        "migrationTimestamp": { "type": "string" },
+        "restorationEligible": { "type": "boolean" }
+      },
+      "required": ["originalDocId", "archiveReason", "migrationTimestamp"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
-      "description": "Registered student, CR, and admin user profiles"
+      "description": "Registered student, CR, faculty, and admin user profiles"
     },
     "/crAssignments/{assignmentId}": {
       "schema": "CRAssignment",
       "description": "Persistent, revocable CR role assignments bound to verified Firebase UIDs and Gmail accounts"
     },
+    "/teacherAssignments/{assignmentId}": {
+      "schema": "TeacherAssignment",
+      "description": "Persistent, revocable Teacher assignments bound to verified Firebase UIDs and faculty Gmails"
+    },
+    "/subjectTeacherAssignments/{assignmentId}": {
+      "schema": "SubjectTeacherAssignment",
+      "description": "Subject-specific teacher assignments granting management authority over designated course"
+    },
+    "/roleAssignments/{docId}": {
+      "schema": "RoleAssignment",
+      "description": "Role assignment history records"
+    },
     "/attendanceSessions/{sessionId}": {
       "schema": "AttendanceSession",
       "description": "Daily attendance sheets marked and finalized by authorized CRs"
+    },
+    "/submissions/{submissionId}": {
+      "schema": "Submission",
+      "description": "Protected student academic assignment submissions"
+    },
+    "/schedules/{scheduleId}": {
+      "schema": "WeeklySchedule",
+      "description": "Official published weekly timetables synchronized in real time to students"
+    },
+    "/scheduleDrafts/{draftId}": {
+      "schema": "WeeklySchedule",
+      "description": "In-progress draft weekly timetables undergoing CR review and subject matching"
+    },
+    "/aggregates/{docId}": {
+      "schema": "UserAggregateStats",
+      "description": "Real-time user aggregate statistics and counts"
+    },
+    "/users_backup_archive/{docId}": {
+      "schema": "UserBackupArchive",
+      "description": "Archived user documents backed up during orphan reconciliation"
+    },
+    "/config/branding": {
+      "schema": "BrandingConfig",
+      "description": "Portal visual branding configuration"
     },
     "/auditLogs/{logId}": {
       "schema": "AuditLog",

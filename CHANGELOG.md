@@ -5,6 +5,78 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.5.0] - 2026-10-23
+
+### Fixed
+- **Firebase Authentication Registered Accounts Login ("Not Found" Bug)**:
+  - Fixed `resolveUserRole` (`src/lib/authService.ts`) to query Firestore via multiple paths: primary UID document `users/{verifiedUid}`, email slug document `users/{email_slug}`, and collection queries by email and UID.
+  - Implemented automatic, idempotent profile initialization: any authentic Firebase Auth user (`auth.currentUser` or verified UID) missing a Firestore document is immediately initialized with their student profile rather than being falsely rejected as "not found" / "not registered".
+  - Fixed error handling in `LoginScreen.tsx` to stop swallowing Firebase Auth errors and accurately distinguish wrong password (`auth/wrong-password`, `auth/invalid-credential`), unverified email, rate limits, and non-existent accounts.
+- **Admin Panel Live Search & Synchronization Communication**:
+  - Eliminated the destructive background `deleteDoc` purge in `getAllRegisteredUsersFromFirestore` that was inadvertently removing valid Firestore user records.
+  - Added backend search endpoint `GET /api/admin/search-users` in `server.ts` to bridge Cloud Firestore and Firebase Auth users via `admin.auth()`, auto-syncing any missing Auth accounts into Firestore.
+  - Added live debounced search querying Firestore and the backend endpoint in `UserManagementView.tsx`, `TeacherAssignmentsView.tsx`, and `RoleAssignmentView.tsx`, so newly registered Firebase Auth accounts are immediately discoverable and selectable without requiring page reloads.
+- **Firestore Security Rules**:
+  - Enhanced `isOwner(userId)` helper in `firestore.rules` to correctly validate document ownership via `resource.data.email == request.auth.token.email` or `resource.data.uid == request.auth.uid`.
+
+---
+
+## [2.4.0] - 2026-10-23
+
+### Added
+- **Subject-Wise Teacher Assignment (4-Step Sequential Workflow)**:
+  - *Step 1*: Filter, search, and select any genuine configured subject from Firestore.
+  - *Step 2*: Scoped subject management workspace displaying subject code, name, credit hours, and active teacher status.
+  - *Step 3*: Search teacher by exact registered Gmail from Firebase Auth user registry; validates verified UID and `emailVerified === true`.
+  - *Step 4*: Binds permanent Firebase UID to subject (`subjectTeacherAssignments`), updates canonical `subjects/{subjectId}`, and keeps non-faculty roles intact.
+- **Dynamic Multi-Subject Management in Teacher Portal (`TeacherLayout.tsx`)**:
+  - Dynamically subscribes to all assigned subjects via `subscribeToTeacherAssignedSubjects({ uid, email })`.
+  - Added dedicated Subject Switcher dropdown allowing teachers assigned to multiple courses to seamlessly toggle between workspaces.
+  - Informative zero-fake-data empty state for verified faculty accounts awaiting subject allocation from Master Admin.
+- **Student Document & Assignment Isolation (`App.tsx` & `teacherService.ts`)**:
+  - Enforced `targetClass` tagging on published assignments, course documents, and notices.
+  - Isolated student live feeds in `App.tsx` so students only receive materials relevant to their enrolled class/section.
+- **Backend Endpoints (`server.ts`)**:
+  - `POST /api/admin/assign-subject-teacher`
+  - `POST /api/admin/revoke-subject-teacher`
+  - `POST /api/admin/keep-subject-teacher-active`
+- **Preserved Learning Resources Guarantee**: Revoking or reassigning teachers maintains all course documents, assignments, and student submissions attached to the canonical `subjectId`.
+
+## [2.3.0] - 2026-10-22
+
+### Added
+- **Full Master Admin Academic Setup & Classes Management (`classService.ts` & `ClassesSectionsView.tsx`)**: Complete administrative workflow to create, inspect, deactivate, and safely manage university degree programs, classes, and sections in Cloud Firestore (`classes`).
+- **Custom Curriculum Subject Authoring (`subjectService.ts` & `SubjectsManagementView.tsx`)**: Master Admin can define courses with custom titles, course codes, credit hours, program scopes, and descriptions.
+- **Explicit Teacher Assignment Modal**: Assign verified registered faculty accounts to specific subjects with real-time Firestore sync and teacher profile reflection.
+- **Dynamic Enrolled Student Class Selection on Registration**: Student registration (`LoginScreen.tsx` & `authService.ts`) now pulls from genuine active classes configured in Firestore; prevents hardcoded class assignments.
+- **Enrolled Student Roster Modal**: Administrators can inspect real-time student rosters for any configured class section.
+- **Safety Dependency Checks**: Classes with enrolled students and subjects with active curriculum cannot be accidentally deleted.
+
+### Removed
+- **Auto-Generated Default Academic Data**: Stripped all hardcoded baseline subjects (`INITIAL_SUBJECTS = []`, `OFFICIAL_SUBJECTS = []`, `SUBJECTS = []`), classes (`INITIAL_CLASSES = []`), static schedule items (`SCHEDULE_ITEMS = []`), and pre-assigned fake teachers.
+- **Hardcoded Fallbacks**: Removed static `'BSSE 1A'` and `'BSCS 3A'` strings from student registration, attendance listeners, and role models.
+
+### Changed
+- **Zero-Fake Data & Empty States**: Clean, informative empty states across Classes & Sections, Subjects Management, Teacher Assignments, CR Assignments, Student Portal Classes screen, and Admin Overview cards.
+
+---
+
+## [2.2.0] - 2026-10-22
+
+### Added
+- **Four-Portal Unified Coordination System**: Master Admin, Teacher, Class Representative (CR), and Student Portals coordinate in real-time over persistent Cloud Firestore workspace records (`subjects`, `assignments`, `submissions`, `grades`, `attendanceSessions`, `documents`, `alerts`).
+- **Teacher Replacement Continuity**: When a teacher is reassigned or replaced by Master Admin, all subject documents, published assignments, student submissions, and grades remain persistent and securely attached to the subject workspace.
+- **CR Replacement Continuity**: When a CR is replaced, the incoming CR inherits the canonical whole-class daily attendance history (`attendanceSessions/${classId}_${date}`) and class roster without data loss.
+- **Real-Time CR-to-Teacher Alert Notifications**: Added `subscribeToTeacherIncomingAlerts` to stream reminders in real time to the Teacher Portal dashboard banner.
+- **Multi-Format In-Built Document Viewer (`DocumentPreviewModal.tsx`)**: In-built viewer supporting PDF documents (with responsive iframe), PPT/PPTX slide deck presentation mode with slide navigation and concept summaries, DOC/DOCX reader mode with zoom controls (70%–150%) and pagination, plus direct download.
+- **Real-Time Curriculum Subject Management (`subjectService.ts`)**: Master Admin subject additions, edits, and teacher assignments synchronize directly to the Firestore `subjects` collection and reflect dynamically across all portals.
+- **Student Submission & Grade Synchronization (`teacherService.ts` & `App.tsx`)**: Real-time tracking of student assignments, submitted work, grades, and teacher feedback.
+
+### Changed
+- **Account Status Persistence (`updateUserAccountStatus`)**: Master Admin suspensions and reactivations persist directly to Firestore `users/{email}` and `users/{uid}` with full audit logging.
+
+---
+
 ## [2.1.0] - 2026-10-21
 
 ### Added

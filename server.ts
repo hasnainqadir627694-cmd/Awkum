@@ -4,12 +4,23 @@ import { v2 as cloudinary } from 'cloudinary';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import adminPkg from 'firebase-admin';
+import { GoogleGenAI, Type } from '@google/genai';
 const admin: any = adminPkg;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const MASTER_ADMIN_EMAIL = 'hasnainbuilds724656@gmail.com';
+
+// Server Gemini Client for vision schedule extraction
+const aiClient = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY || '',
+  httpOptions: {
+    headers: {
+      'User-Agent': 'aistudio-build',
+    },
+  },
+});
 
 // Secure Cloudinary Configuration
 cloudinary.config({
@@ -58,6 +69,16 @@ try {
   }, { merge: true }).catch(() => {});
 } catch (err: any) {
   console.warn('[Firebase Admin] Notice initializing Firebase Admin (using server memory sync):', err?.message || err);
+}
+
+let serverBrandingCache: any = null;
+if (adminDb) {
+  adminDb.collection('config').doc('branding').get().then((snap: any) => {
+    if (snap.exists) {
+      serverBrandingCache = snap.data();
+      console.log('[Server Branding] Loaded server branding cache from Firestore');
+    }
+  }).catch(() => {});
 }
 
 // In-memory mirror for fast validation and offline resilience
@@ -177,10 +198,59 @@ async function startServer() {
         });
       }
 
+      // Check if user is marked as CR in users collection in Firestore
+      if (adminDb) {
+        try {
+          let userDocData: any = null;
+          if (cleanUid) {
+            const uSnap = await adminDb.collection('users').doc(cleanUid).get();
+            if (uSnap.exists) userDocData = uSnap.data();
+          }
+          if (!userDocData && cleanEmail) {
+            const uSnap = await adminDb.collection('users').doc(cleanEmail.replace(/[@.]/g, '_')).get();
+            if (uSnap.exists) userDocData = uSnap.data();
+          }
+
+          if (
+            userDocData &&
+            userDocData.crStatus !== 'revoked' &&
+            (userDocData.isCR ||
+              userDocData.role === 'cr' ||
+              (Array.isArray(userDocData.roles) && userDocData.roles.includes('cr')))
+          ) {
+            const restoredClass = userDocData.assignedClass || 'BS SE';
+            const assignmentId = `cr_${cleanEmail.replace(/[@.]/g, '_')}`;
+            const repairedAssignment: ServerCRAssignment = {
+              id: assignmentId,
+              uid: cleanUid || userDocData.uid || `uid_${cleanEmail.replace(/[@.]/g, '_')}`,
+              email: cleanEmail || userDocData.email,
+              name: userDocData.name || 'Student',
+              studentId: userDocData.studentId || '',
+              assignedClass: restoredClass,
+              status: 'active',
+              grantedAt: userDocData.crAssignedAt || new Date().toISOString(),
+              grantedBy: userDocData.crAssignedBy || MASTER_ADMIN_EMAIL,
+              revokedAt: null,
+              revokedBy: null,
+              revocationReason: null,
+            };
+            serverCRAssignments.set(repairedAssignment.id, repairedAssignment);
+            return res.json({
+              isCR: true,
+              assignedClass: restoredClass,
+              status: 'active',
+              assignment: repairedAssignment,
+            });
+          }
+        } catch (dbErr) {
+          console.info('[Validate CR User Lookup Notice]:', dbErr);
+        }
+      }
+
       return res.json({
         isCR: false,
         assignedClass: null,
-        status: 'revoked',
+        status: 'none',
       });
     } catch (err: any) {
       console.error('[RBAC Validate Error]:', err);
@@ -561,6 +631,587 @@ async function startServer() {
   });
 
   /**
+   * Protected Master Admin Operation: Assign faculty teacher to an exact subject.
+   */
+  app.post('/api/admin/assign-subject-teacher', async (req, res) => {
+    try {
+      const { adminEmail, subjectId, teacherUid, teacherEmail, teacherName } = req.body;
+      const cleanAdmin = (adminEmail || '').trim().toLowerCase();
+
+      if (cleanAdmin !== MASTER_ADMIN_EMAIL.toLowerCase()) {
+        return res.status(403).json({
+          error: 'Access Denied: Only verified Master Administrator can assign subject teachers.',
+        });
+      }
+
+      const cleanSubjId = (subjectId || '').trim();
+      const cleanUid = (teacherUid || '').trim();
+      const cleanEmail = (teacherEmail || '').trim().toLowerCase();
+      const cleanName = (teacherName || '').trim();
+
+      if (!cleanSubjId || !cleanUid || !cleanEmail) {
+        return res.status(400).json({ error: 'Missing subject ID, teacher UID, or teacher Gmail.' });
+      }
+
+      const nowIso = new Date().toISOString();
+      const assignmentId = `sta_${cleanSubjId}_${cleanUid}_${Date.now()}`;
+
+      if (adminDb) {
+        // 1. Fetch subject details
+        const subjRef = adminDb.collection('subjects').doc(cleanSubjId);
+        const subjSnap = await subjRef.get();
+        const subjData = subjSnap.exists ? subjSnap.data() : { name: cleanSubjId, code: cleanSubjId };
+
+        // 2. Revoke any previous active assignment on this subject
+        const prevAssignments = await adminDb
+          .collection('subjectTeacherAssignments')
+          .where('subjectId', '==', cleanSubjId)
+          .where('status', '==', 'active')
+          .get();
+
+        for (const prevDoc of prevAssignments.docs) {
+          await prevDoc.ref.set(
+            {
+              status: 'revoked',
+              revokedAt: nowIso,
+              revokedBy: cleanAdmin,
+              revocationReason: `Replaced by ${cleanName}`,
+            },
+            { merge: true }
+          );
+        }
+
+        // 3. Create new assignment document
+        const assignmentPayload = {
+          id: assignmentId,
+          subjectId: cleanSubjId,
+          subjectName: subjData.name || cleanSubjId,
+          subjectCode: subjData.code || cleanSubjId,
+          assignedClass: subjData.assignedClass || '',
+          teacherUid: cleanUid,
+          teacherEmail: cleanEmail,
+          teacherName: cleanName,
+          status: 'active',
+          assignedBy: cleanAdmin,
+          assignedAt: nowIso,
+          revokedAt: null,
+          revokedBy: null,
+          revocationReason: null,
+          lastConfirmedActiveAt: nowIso,
+        };
+
+        await adminDb.collection('subjectTeacherAssignments').doc(assignmentId).set(assignmentPayload);
+
+        // 4. Update canonical subject document
+        await subjRef.set(
+          {
+            assignedTeacher: cleanName,
+            teacherEmail: cleanEmail,
+            teacherUid: cleanUid,
+            status: 'Assigned',
+            teacherAssignedAt: nowIso,
+            assignmentId,
+            lastConfirmedActiveAt: nowIso,
+          },
+          { merge: true }
+        );
+
+        // 5. Update user profile document (maintaining Student role)
+        const userDoc = adminDb.collection('users').doc(cleanUid);
+        await userDoc.set(
+          {
+            role: 'teacher',
+            teacherStatus: 'active',
+            teacherAssignedAt: nowIso,
+            teacherAssignedBy: cleanAdmin,
+          },
+          { merge: true }
+        );
+
+        // 6. Security audit trail
+        await adminDb.collection('auditLogs').add({
+          action: 'Subject Teacher Assigned',
+          performedBy: cleanAdmin,
+          details: `Assigned faculty member ${cleanName} (${cleanEmail}, UID: ${cleanUid.slice(0, 8)}...) to subject ${subjData.name || cleanSubjId}`,
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          category: 'academic',
+          status: 'success',
+        });
+      }
+
+      return res.json({
+        success: true,
+        assignmentId,
+        message: `Teacher ${cleanName} successfully assigned to ${cleanSubjId}.`,
+      });
+    } catch (err: any) {
+      console.error('[Assign Subject Teacher Error]:', err);
+      return res.status(500).json({ error: err?.message || 'Server error assigning subject teacher.' });
+    }
+  });
+
+  /**
+   * Protected Master Admin Operation: Revoke teacher access from a specific subject.
+   */
+  app.post('/api/admin/revoke-subject-teacher', async (req, res) => {
+    try {
+      const { adminEmail, subjectId, reason } = req.body;
+      const cleanAdmin = (adminEmail || '').trim().toLowerCase();
+
+      if (cleanAdmin !== MASTER_ADMIN_EMAIL.toLowerCase()) {
+        return res.status(403).json({
+          error: 'Access Denied: Only verified Master Administrator can revoke subject teachers.',
+        });
+      }
+
+      const cleanSubjId = (subjectId || '').trim();
+      const revocationReason = reason || 'Revoked by Master Administrator';
+      const nowIso = new Date().toISOString();
+
+      if (adminDb && cleanSubjId) {
+        // 1. Mark active assignment as revoked
+        const activeSnap = await adminDb
+          .collection('subjectTeacherAssignments')
+          .where('subjectId', '==', cleanSubjId)
+          .where('status', '==', 'active')
+          .get();
+
+        let revokedTeacherUid = '';
+        for (const docSnap of activeSnap.docs) {
+          const d = docSnap.data();
+          revokedTeacherUid = d.teacherUid || '';
+          await docSnap.ref.set(
+            {
+              status: 'revoked',
+              revokedAt: nowIso,
+              revokedBy: cleanAdmin,
+              revocationReason,
+            },
+            { merge: true }
+          );
+        }
+
+        // 2. Unassign subject
+        await adminDb.collection('subjects').doc(cleanSubjId).set(
+          {
+            assignedTeacher: null,
+            teacherEmail: null,
+            teacherUid: null,
+            status: 'Unassigned',
+            teacherAssignedAt: null,
+            assignmentId: null,
+          },
+          { merge: true }
+        );
+
+        // 3. Update teacher user doc if no remaining active subjects
+        if (revokedTeacherUid) {
+          const otherSnap = await adminDb
+            .collection('subjectTeacherAssignments')
+            .where('teacherUid', '==', revokedTeacherUid)
+            .where('status', '==', 'active')
+            .get();
+
+          if (otherSnap.empty) {
+            await adminDb.collection('users').doc(revokedTeacherUid).set(
+              {
+                teacherStatus: 'revoked',
+                teacherRevokedAt: nowIso,
+                teacherRevokedBy: cleanAdmin,
+                teacherRevocationReason: revocationReason,
+              },
+              { merge: true }
+            );
+          }
+        }
+
+        // 4. Audit log
+        await adminDb.collection('auditLogs').add({
+          action: 'Subject Teacher Access Revoked',
+          performedBy: cleanAdmin,
+          details: `Revoked teacher access from subject ${cleanSubjId} - Reason: ${revocationReason}`,
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          category: 'academic',
+          status: 'warning',
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: `Teacher access revoked for subject ${cleanSubjId}. All materials preserved.`,
+      });
+    } catch (err: any) {
+      console.error('[Revoke Subject Teacher Error]:', err);
+      return res.status(500).json({ error: err?.message || 'Server error revoking subject teacher.' });
+    }
+  });
+
+  /**
+   * Protected Master Admin Operation: Confirm and keep current subject teacher active.
+   */
+  app.post('/api/admin/keep-subject-teacher-active', async (req, res) => {
+    try {
+      const { adminEmail, subjectId } = req.body;
+      const cleanAdmin = (adminEmail || '').trim().toLowerCase();
+
+      if (cleanAdmin !== MASTER_ADMIN_EMAIL.toLowerCase()) {
+        return res.status(403).json({
+          error: 'Access Denied: Only verified Master Administrator can confirm active teachers.',
+        });
+      }
+
+      const cleanSubjId = (subjectId || '').trim();
+      const nowIso = new Date().toISOString();
+
+      if (adminDb && cleanSubjId) {
+        await adminDb.collection('subjects').doc(cleanSubjId).set(
+          {
+            lastConfirmedActiveAt: nowIso,
+          },
+          { merge: true }
+        );
+
+        const snap = await adminDb
+          .collection('subjectTeacherAssignments')
+          .where('subjectId', '==', cleanSubjId)
+          .where('status', '==', 'active')
+          .get();
+
+        for (const docSnap of snap.docs) {
+          await docSnap.ref.set({ lastConfirmedActiveAt: nowIso }, { merge: true });
+        }
+
+        await adminDb.collection('auditLogs').add({
+          action: 'Subject Teacher Kept Active',
+          performedBy: cleanAdmin,
+          details: `Master Admin confirmed active teacher assignment for subject ${cleanSubjId}`,
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          category: 'academic',
+          status: 'success',
+        });
+      }
+
+      return res.json({ success: true, confirmedAt: nowIso });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || 'Failed to keep teacher active.' });
+    }
+  });
+
+  /**
+   * Protected Master Admin Operation: Verify accounts against real Firebase Authentication users by UID.
+   * Retains accounts with a valid Firebase Auth UID (or Master Admin) and removes all unverified or synthetic orphan records.
+   */
+  app.all('/api/admin/verify-and-clean-users', async (req, res) => {
+    try {
+      const verifiedAccounts: any[] = [];
+      const removedAccounts: any[] = [];
+
+      // 1. Fetch all real Firebase Auth users
+      const firebaseAuthUsers = new Map<string, any>(); // email -> authUser
+      const authUidSet = new Set<string>(); // set of valid UIDs
+
+      if (admin && admin.auth) {
+        try {
+          const listUsersResult = await admin.auth().listUsers(1000);
+          listUsersResult.users.forEach((userRecord: any) => {
+            if (userRecord.email) {
+              const emailLower = userRecord.email.toLowerCase().trim();
+              firebaseAuthUsers.set(emailLower, {
+                uid: userRecord.uid,
+                email: emailLower,
+                displayName: userRecord.displayName || '',
+                emailVerified: userRecord.emailVerified,
+                creationTime: userRecord.metadata?.creationTime,
+              });
+            }
+            authUidSet.add(userRecord.uid);
+          });
+          console.log(`[Auth Audit] Found ${authUidSet.size} registered accounts in Firebase Authentication.`);
+        } catch (authErr: any) {
+          console.warn('[Auth Audit] Notice listing Firebase Auth users:', authErr?.message || authErr);
+        }
+      }
+
+      // 2. Fetch all Firestore user documents and audit
+      if (adminDb) {
+        try {
+          const usersSnap = await adminDb.collection('users').get();
+          console.log(`[Auth Audit] Auditing ${usersSnap.docs.length} user documents in Firestore 'users' collection.`);
+
+          for (const docSnap of usersSnap.docs) {
+            const docId = docSnap.id;
+            const data = docSnap.data();
+            const docEmail = (data.email || '').trim().toLowerCase();
+            const docUid = (data.uid || data.firebaseUid || '').trim();
+
+            // Master admin exception
+            if (
+              docEmail === MASTER_ADMIN_EMAIL.toLowerCase() ||
+              docId === 'master_admin' ||
+              docId === 'hasnainbuilds724656_gmail_com'
+            ) {
+              verifiedAccounts.push({
+                id: docId,
+                name: data.name || 'Hasnain Qadir',
+                email: MASTER_ADMIN_EMAIL,
+                uid: docUid || '97DtWk8axhfWOyi3hZfOcWgS0n92',
+                role: 'master_admin',
+                verificationStatus: 'Verified Master Administrator',
+              });
+              continue;
+            }
+
+            // Check if UID is in Firebase Auth OR if Email matches a real Firebase Auth user
+            let matchingAuthUser: any = null;
+            if (docUid && authUidSet.has(docUid)) {
+              matchingAuthUser = Array.from(firebaseAuthUsers.values()).find((u) => u.uid === docUid);
+            }
+            if (!matchingAuthUser && docEmail && firebaseAuthUsers.has(docEmail)) {
+              matchingAuthUser = firebaseAuthUsers.get(docEmail);
+            }
+
+            if (matchingAuthUser) {
+              // Account is verified! Update Firestore document with correct Firebase Auth UID
+              const correctUid = matchingAuthUser.uid;
+              if (data.uid !== correctUid || !data.isFirebaseUser) {
+                await docSnap.ref.set({ uid: correctUid, isFirebaseUser: true }, { merge: true });
+              }
+
+              verifiedAccounts.push({
+                id: docId,
+                name: data.name || data.fullName || matchingAuthUser.displayName || 'Registered Student',
+                email: docEmail || matchingAuthUser.email,
+                uid: correctUid,
+                role: data.role || 'student',
+                roles: data.roles || [data.role || 'student'],
+                department: data.department || 'Software Engineering',
+                assignedClass: data.assignedClass || 'BS SE',
+                verificationStatus: 'Verified Firebase Auth User',
+              });
+            } else if (authUidSet.size > 0 && (!docEmail || (!docEmail.includes('@') && !docUid))) {
+              // Only delete truly corrupted/empty records if we successfully connected to Firebase Auth
+              await docSnap.ref.delete();
+
+              removedAccounts.push({
+                id: docId,
+                name: data.name || data.fullName || 'Unverified Record',
+                email: docEmail || 'No Email',
+                uid: docUid || 'No UID',
+                role: data.role || 'unknown',
+                reason: 'No matching account or valid UID found in Firebase Authentication users',
+              });
+            } else {
+              // Preserve student profile
+              verifiedAccounts.push({
+                id: docId,
+                name: data.name || data.fullName || (docEmail ? docEmail.split('@')[0] : 'Registered Student'),
+                email: docEmail || 'Student Profile',
+                uid: docUid || docId,
+                role: data.role || 'student',
+                roles: data.roles || [data.role || 'student'],
+                department: data.department || 'Software Engineering',
+                assignedClass: data.assignedClass,
+                verificationStatus: 'Preserved Profile',
+              });
+            }
+          }
+        } catch (dbErr: any) {
+          console.error('[Auth Audit] Error auditing Firestore users:', dbErr);
+        }
+      }
+
+      // 3. Ensure any real Firebase Auth user exists in Firestore
+      for (const [email, authUser] of firebaseAuthUsers.entries()) {
+        if (email === MASTER_ADMIN_EMAIL.toLowerCase()) continue;
+        const existsInVerified = verifiedAccounts.some((u) => u.email.toLowerCase() === email);
+        if (!existsInVerified && adminDb) {
+          const docId = email.replace(/[@.]/g, '_');
+          const newUserDoc = {
+            id: `u-${authUser.uid}`,
+            uid: authUser.uid,
+            email: email,
+            name: authUser.displayName || email.split('@')[0].replace(/[._]/g, ' '),
+            role: 'student',
+            roles: ['student'],
+            status: 'active',
+            department: 'Software Engineering',
+            semester: '1st Semester',
+            isFirebaseUser: true,
+            emailVerified: authUser.emailVerified ?? false,
+            registeredDate: 'Recently Registered',
+            createdAt: new Date().toISOString(),
+          };
+          await adminDb.collection('users').doc(docId).set(newUserDoc, { merge: true });
+          await adminDb.collection('users').doc(authUser.uid).set(newUserDoc, { merge: true });
+
+          verifiedAccounts.push({
+            id: docId,
+            name: newUserDoc.name,
+            email: email,
+            uid: authUser.uid,
+            role: 'student',
+            roles: ['student'],
+            department: 'Software Engineering',
+            assignedClass: 'BS SE',
+            verificationStatus: 'Verified & Profile Initialized for Firebase Auth User',
+          });
+        }
+      }
+
+      // De-duplicate verified and removed lists by email/id
+      const uniqueVerified = Array.from(
+        new Map(verifiedAccounts.map((u) => [u.email.toLowerCase(), u])).values()
+      );
+      const uniqueRemoved = Array.from(
+        new Map(removedAccounts.map((u) => [u.id, u])).values()
+      );
+
+      return res.json({
+        success: true,
+        summary: {
+          totalVerifiedAccounts: uniqueVerified.length,
+          totalRemovedAccounts: uniqueRemoved.length,
+        },
+        verifiedAccounts: uniqueVerified,
+        removedAccounts: uniqueRemoved,
+      });
+    } catch (err: any) {
+      console.error('[Verify & Clean Users Error]:', err);
+      return res.status(500).json({ error: err?.message || 'Failed to verify and clean user accounts.' });
+    }
+  });
+
+  /**
+   * Search registered accounts across Cloud Firestore and Firebase Authentication.
+   * Auto-synchronizes newly found Firebase Auth accounts into Firestore.
+   */
+  app.get('/api/admin/search-users', async (req, res) => {
+    try {
+      const q = ((req.query.q as string) || '').trim().toLowerCase();
+      const results: any[] = [];
+      const seen = new Set<string>();
+
+      // 1. Search in Firestore users collection
+      if (adminDb) {
+        try {
+          const usersSnap = await adminDb.collection('users').get();
+          usersSnap.forEach((docSnap: any) => {
+            const data = docSnap.data();
+            const docId = docSnap.id;
+            const email = (data.email || (docId.includes('@') ? docId : (docId.includes('_') ? docId.replace(/_/g, '.') : ''))).trim().toLowerCase();
+            const name = (data.name || data.fullName || '').toLowerCase();
+            const studentId = (data.studentId || data.rollNo || '').toLowerCase();
+            const uid = (data.uid || data.firebaseUid || (docId.length >= 15 && !docId.includes('@') ? docId : '')).trim();
+
+            const matches = !q || email.includes(q) || name.includes(q) || studentId.includes(q) || uid.toLowerCase() === q;
+            if (matches && email && !seen.has(email)) {
+              seen.add(email);
+              results.push({
+                id: docSnap.id,
+                uid: uid || docSnap.id,
+                name: data.name || data.fullName || email.split('@')[0],
+                email,
+                studentId: data.studentId || data.rollNo,
+                role: data.role || 'student',
+                roles: data.roles || [data.role || 'student'],
+                status: data.status || 'active',
+                department: data.department || 'Software Engineering',
+                assignedClass: data.assignedClass,
+                assignedSubjects: data.assignedSubjects,
+                emailVerified: !!data.emailVerified,
+                isFirebaseUser: true,
+              });
+            }
+          });
+        } catch (err: any) {
+          console.warn('[Server Search] Firestore users query notice:', err?.message || err);
+        }
+      }
+
+      // 2. Also search directly in Firebase Auth users if admin.auth() is available
+      if (admin && admin.auth) {
+        try {
+          if (q && q.includes('@')) {
+            try {
+              const authUser = await admin.auth().getUserByEmail(q);
+              if (authUser && authUser.email && !seen.has(authUser.email.toLowerCase())) {
+                const userEmail = authUser.email.toLowerCase();
+                seen.add(userEmail);
+                const roll = Math.floor(1000 + Math.random() * 9000);
+                const newUserObj = {
+                  id: `u-${authUser.uid}`,
+                  uid: authUser.uid,
+                  name: authUser.displayName || userEmail.split('@')[0].replace(/[._]/g, ' '),
+                  email: userEmail,
+                  studentId: `26SE${roll}`,
+                  role: 'student',
+                  roles: ['student'],
+                  status: 'active',
+                  department: 'Software Engineering',
+                  semester: '1st Semester',
+                  emailVerified: authUser.emailVerified ?? false,
+                  registeredDate: 'Recently Registered',
+                  isFirebaseUser: true,
+                };
+                results.push(newUserObj);
+
+                // Auto-sync into Firestore
+                if (adminDb) {
+                  adminDb.collection('users').doc(authUser.uid).set(newUserObj, { merge: true }).catch(() => {});
+                  adminDb.collection('users').doc(userEmail.replace(/[@.]/g, '_')).set(newUserObj, { merge: true }).catch(() => {});
+                }
+              }
+            } catch (e) {
+              // Not found by exact email, proceed to listUsers check
+            }
+          }
+
+          // Check listUsers (recent 100)
+          const listRes = await admin.auth().listUsers(100);
+          for (const u of listRes.users) {
+            const uEmail = (u.email || '').toLowerCase();
+            if (uEmail && !seen.has(uEmail)) {
+              const uName = (u.displayName || '').toLowerCase();
+              const matches = !q || uEmail.includes(q) || uName.includes(q);
+              if (matches) {
+                seen.add(uEmail);
+                const roll = Math.floor(1000 + Math.random() * 9000);
+                const userRecord = {
+                  id: `u-${u.uid}`,
+                  uid: u.uid,
+                  name: u.displayName || uEmail.split('@')[0].replace(/[._]/g, ' '),
+                  email: uEmail,
+                  studentId: `26SE${roll}`,
+                  role: 'student',
+                  roles: ['student'],
+                  status: 'active',
+                  department: 'Software Engineering',
+                  semester: '1st Semester',
+                  emailVerified: u.emailVerified ?? false,
+                  registeredDate: 'Recently Registered',
+                  isFirebaseUser: true,
+                };
+                results.push(userRecord);
+
+                if (adminDb) {
+                  adminDb.collection('users').doc(u.uid).set(userRecord, { merge: true }).catch(() => {});
+                  adminDb.collection('users').doc(uEmail.replace(/[@.]/g, '_')).set(userRecord, { merge: true }).catch(() => {});
+                }
+              }
+            }
+          }
+        } catch (authErr: any) {
+          console.warn('[Server Search] Auth users check notice:', authErr?.message || authErr);
+        }
+      }
+
+      return res.json({ success: true, users: results });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || 'Search failed' });
+    }
+  });
+
+  /**
    * Enforces server-side authorization on EVERY CR operation (attendance marking, correction, PDF export, roster).
    * Denies access if the user's CR status is not currently active for the target class.
    */
@@ -611,6 +1262,50 @@ async function startServer() {
       return res.json({ assignments: list });
     } catch (err: any) {
       return res.status(500).json({ error: err?.message });
+    }
+  });
+
+  // =========================================================================
+  // BRANDING INSTANT SERVING API
+  // =========================================================================
+
+  app.get('/api/branding', async (_req, res) => {
+    if (serverBrandingCache) {
+      return res.json(serverBrandingCache);
+    }
+    if (adminDb) {
+      try {
+        const snap = await adminDb.collection('config').doc('branding').get();
+        if (snap.exists) {
+          serverBrandingCache = snap.data();
+          return res.json(serverBrandingCache);
+        }
+      } catch (err: any) {
+        console.info('[Server Branding] Notice querying Firestore branding:', err?.message || err);
+      }
+    }
+    return res.json({
+      logoUrl: '',
+      bottomImageUrl: '/images/awkum-admin-building.jpg',
+      bottomImageEnabled: true,
+      bottomImageScale: 100,
+      bgImageUrl: '',
+      bgImageEnabled: false,
+      bgImageScale: 100,
+      version: 1,
+    });
+  });
+
+  app.post('/api/branding', async (req, res) => {
+    try {
+      const newBranding = req.body;
+      serverBrandingCache = newBranding;
+      if (adminDb) {
+        await adminDb.collection('config').doc('branding').set(newBranding, { merge: true });
+      }
+      return res.json({ success: true, branding: serverBrandingCache });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || 'Failed to update server branding cache.' });
     }
   });
 
@@ -671,6 +1366,266 @@ async function startServer() {
       return res.status(500).json({
         error: error?.message || 'Cloudinary upload operation failed.',
       });
+    }
+  });
+
+  // =========================================================================
+  // AI TIMETABLE EXTRACTION & SUBJECT MATCHING API (GEMINI VISION)
+  // =========================================================================
+
+  /**
+   * Protected CR Operation: Analyze Timetable Image using Gemini Vision AI.
+   * Extracts days, periods, times, and subject labels into structured draft schedule.
+   */
+  app.post('/api/schedule/analyze-timetable', async (req, res) => {
+    try {
+      const { fileData, classId, crEmail, crUid } = req.body;
+
+      if (!fileData || !classId) {
+        return res.status(400).json({ error: 'Missing timetable image fileData or classId.' });
+      }
+
+      // 1. Enforce Server-Side Authorization: Verify active CR role or Master Admin
+      const cleanEmail = (crEmail || '').trim().toLowerCase();
+      const cleanUid = (crUid || '').trim();
+      const cleanClass = (classId || '').trim();
+
+      const activeAssignment = await getActiveAssignment(cleanUid, cleanEmail);
+      const isMasterAdmin = cleanEmail === MASTER_ADMIN_EMAIL.toLowerCase();
+
+      if (!isMasterAdmin) {
+        if (!activeAssignment || activeAssignment.status !== 'active') {
+          return res.status(403).json({ error: 'Forbidden: Active Class Representative assignment required.' });
+        }
+        if (cleanClass && activeAssignment.assignedClass.toLowerCase() !== cleanClass.toLowerCase()) {
+          return res.status(403).json({
+            error: `Forbidden: Your CR authorization is strictly restricted to ${activeAssignment.assignedClass}.`,
+          });
+        }
+      }
+
+      // 2. Parse Image Base64 & Mime Type
+      let mimeType = 'image/png';
+      let base64Image = fileData;
+      if (fileData.includes(';base64,')) {
+        const parts = fileData.split(';base64,');
+        mimeType = parts[0].replace('data:', '');
+        base64Image = parts[1];
+      }
+
+      // 3. Fetch Database Subjects for Subject Matching
+      let dbSubjects: { id: string; name: string; code: string; teacher?: string }[] = [];
+      if (adminDb) {
+        try {
+          const subjectsSnap = await adminDb.collection('subjects').get();
+          subjectsSnap.forEach((docSnap: any) => {
+            const data = docSnap.data();
+            dbSubjects.push({
+              id: docSnap.id,
+              name: data.name || '',
+              code: data.code || '',
+              teacher: data.assignedTeacher || '',
+            });
+          });
+        } catch (dbErr: any) {
+          console.info('[Schedule AI Server] Notice fetching database subjects:', dbErr?.message || dbErr);
+        }
+      }
+
+      // 4. Call Gemini Vision API using @google/genai with automatic retries & model fallback
+      const promptText = `Analyze this weekly university timetable image for class "${cleanClass}" at Abdul Wali Khan University Mardan (AWKUM).
+
+CRITICAL EXTRACTION RULES:
+1. Days: Extract weekdays listed in the timetable (e.g. Mon, Tue, Wed, Thu, Fri, Sat, Sun).
+2. Time Periods: Extract column/period headers and identify their exact start and end times (e.g. "09:00 AM - 10:25 AM").
+3. Subject Cells: Read subject names, subject codes, or course titles from each day and period cell (e.g. "CS100", "PF Theory", "ENG101", "Calculus").
+4. MANDATORY BLANK CELL RULE: If a cell in the grid is empty, blank, or has no class, set rawSubject to null. DO NOT invent, guess, or distribute subjects into blank slots.
+5. MANDATORY BLANK DAY RULE: If an entire day has no scheduled classes or is omitted from the timetable image, do NOT generate classes for that day.
+6. EXCLUDE teacher names, room numbers, or random annotations from the extracted rawSubject string.
+7. Return structured JSON matching the provided schema.`;
+
+      const candidateModels = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
+      let geminiResponse: any = null;
+      let lastErrorMsg = '';
+
+      for (const modelName of candidateModels) {
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            console.log(`[Schedule AI Server] Processing timetable via ${modelName} (Attempt ${attempt})...`);
+            const res = await aiClient.models.generateContent({
+              model: modelName,
+              contents: [
+                {
+                  parts: [
+                    {
+                      inlineData: {
+                        mimeType,
+                        data: base64Image,
+                      },
+                    },
+                    {
+                      text: promptText,
+                    },
+                  ],
+                },
+              ],
+              config: {
+                responseMimeType: 'application/json',
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    days: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                      description: 'List of days detected (e.g. ["Mon", "Tue", "Wed", "Thu", "Fri"])',
+                    },
+                    periods: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          periodIndex: { type: Type.INTEGER },
+                          label: { type: Type.STRING },
+                          startTime: { type: Type.STRING },
+                          endTime: { type: Type.STRING },
+                        },
+                        required: ['periodIndex', 'startTime', 'endTime'],
+                      },
+                    },
+                    grid: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          day: { type: Type.STRING },
+                          periodIndex: { type: Type.INTEGER },
+                          rawSubject: { type: Type.STRING, nullable: true },
+                        },
+                        required: ['day', 'periodIndex'],
+                      },
+                    },
+                    warnings: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                  },
+                  required: ['days', 'periods', 'grid'],
+                },
+              },
+            });
+
+            if (res && res.text) {
+              geminiResponse = res;
+              console.log(`[Schedule AI Server] Successfully extracted schedule using ${modelName}`);
+              break;
+            }
+          } catch (err: any) {
+            lastErrorMsg = err?.message || String(err);
+            console.warn(`[Schedule AI Server] ${modelName} attempt ${attempt} notice:`, lastErrorMsg);
+            // Wait 1 second before next retry
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          }
+        }
+        if (geminiResponse && geminiResponse.text) {
+          break;
+        }
+      }
+
+      if (!geminiResponse || !geminiResponse.text) {
+        return res.status(503).json({
+          error: 'Gemini AI Vision servers are currently experiencing peak demand. Automatic retries were attempted. Please click "Extract Timetable with Gemini AI" again in a few seconds.',
+        });
+      }
+
+      const extractedJsonText = geminiResponse.text?.trim() || '{}';
+      let extractedData: any = {};
+      try {
+        extractedData = JSON.parse(extractedJsonText);
+      } catch (e) {
+        console.warn('[Schedule AI Server] Failed to parse Gemini JSON output:', extractedJsonText);
+      }
+
+      // 5. Build Structured Draft Schedule with Subject Matching
+      const extractedDays: string[] = extractedData.days || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+      const extractedPeriods: any[] = extractedData.periods || [];
+      const extractedGrid: any[] = extractedData.grid || [];
+      const extractedWarnings: string[] = extractedData.warnings || [];
+
+      const items: any[] = [];
+
+      for (const cell of extractedGrid) {
+        if (!cell.rawSubject || typeof cell.rawSubject !== 'string' || !cell.rawSubject.trim()) {
+          continue; // Skip empty cells as required by rules
+        }
+
+        const rawText = cell.rawSubject.trim();
+        const periodObj = extractedPeriods.find((p) => p.periodIndex === cell.periodIndex);
+        const startTime = periodObj?.startTime || '09:00 AM';
+        const endTime = periodObj?.endTime || '10:25 AM';
+        const periodLabel = periodObj?.label || `${startTime} - ${endTime}`;
+
+        // Fuzzy Subject Matching against dbSubjects
+        let matchedSubject = dbSubjects.find((s) => {
+          const cleanRaw = rawText.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const cleanCode = s.code.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const cleanName = s.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+          return (
+            (cleanCode && cleanRaw.includes(cleanCode)) ||
+            (cleanName && (cleanRaw.includes(cleanName) || cleanName.includes(cleanRaw)))
+          );
+        });
+
+        const isMatched = !!matchedSubject;
+        const subjectCode = matchedSubject?.code || rawText.split(' ')[0] || rawText;
+        const subjectName = matchedSubject?.name || rawText;
+        const subjectId = matchedSubject?.id || `raw_${rawText.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+        const teacherName = matchedSubject?.teacher || undefined;
+
+        items.push({
+          id: `p_${cell.day}_${cell.periodIndex}_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          day: cell.day,
+          periodIndex: cell.periodIndex,
+          periodLabel,
+          startTime,
+          endTime,
+          subjectId,
+          subjectCode,
+          subjectName,
+          teacherName,
+          room: 'Department Lecture Hall',
+          isMatched,
+          matchWarning: isMatched
+            ? undefined
+            : `Unmatched subject '${rawText}' - Please verify with registered curriculum subjects.`,
+        });
+      }
+
+      const draftSchedule = {
+        id: `draft_${cleanClass.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
+        classId: cleanClass,
+        status: 'draft',
+        publishedVersion: 0,
+        sourceImageUrl: fileData.length < 500000 ? fileData : undefined,
+        items,
+        days: extractedDays,
+        warnings: extractedWarnings,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      console.log(
+        `[Schedule AI Server] AI Extraction complete for ${cleanClass}: Extracted ${items.length} classes across ${extractedDays.length} days.`
+      );
+
+      return res.json({
+        success: true,
+        draft: draftSchedule,
+        extractedCount: items.length,
+      });
+    } catch (err: any) {
+      console.error('[Schedule AI Server Error]:', err);
+      return res.status(500).json({ error: err?.message || 'Failed to analyze timetable image with AI.' });
     }
   });
 

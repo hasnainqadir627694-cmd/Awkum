@@ -26,7 +26,6 @@ import { AwkumEmblem } from '../common/AwkumLogo';
 import { AdminUser, AuditLogItem, INITIAL_AUDIT_LOGS, INITIAL_USERS, UserRole } from '../../data/adminData';
 import { AdminDashboardOverview } from './AdminDashboardOverview';
 import { UserManagementView } from './UserManagementView';
-import { RoleAssignmentView } from './RoleAssignmentView';
 import { ClassesSectionsView } from './ClassesSectionsView';
 import { SubjectsManagementView } from './SubjectsManagementView';
 import { TeacherAssignmentsView } from './TeacherAssignmentsView';
@@ -46,6 +45,7 @@ import {
   subscribeToAllUsers,
   getAllRegisteredUsersFromFirestore,
   getRegisteredUsers,
+  updateUserAccountStatus,
 } from '../../lib/authService';
 
 interface AdminLayoutProps {
@@ -56,7 +56,6 @@ interface AdminLayoutProps {
 export type AdminViewType =
   | 'dashboard'
   | 'users'
-  | 'roles'
   | 'panel-access'
   | 'classes'
   | 'subjects'
@@ -76,6 +75,8 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>(INITIAL_AUDIT_LOGS);
   const [roleAssignmentTargetUser, setRoleAssignmentTargetUser] = useState<AdminUser | null>(null);
   const [roleAssignmentTargetClass, setRoleAssignmentTargetClass] = useState<string | undefined>(undefined);
+  const [selectedSubjectForTeacher, setSelectedSubjectForTeacher] = useState<string | null>(null);
+  const [selectedClassForCR, setSelectedClassForCR] = useState<string | null>(null);
   const [globalSearch, setGlobalSearch] = useState('');
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [isFirebaseSyncing, setIsFirebaseSyncing] = useState<boolean>(false);
@@ -142,6 +143,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
             const updated = { ...u, ...updates };
 
             if (updates.status) {
+              updateUserAccountStatus(currentUser.email, u.email, updates.status);
               const actionText = updates.status === 'suspended' ? 'Account Suspended' : 'Account Reactivated';
               const logItem: AuditLogItem = {
                 id: `log-${Date.now()}`,
@@ -153,7 +155,6 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
                 status: updates.status === 'suspended' ? 'warning' : 'success',
               };
               setAuditLogs((prevLogs) => [logItem, ...prevLogs]);
-              recordAuditLog(logItem);
             }
 
             return updated;
@@ -188,7 +189,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
         }
       });
     } else if (newRole === 'teacher') {
-      grantTeacherAccess(currentUser.email, targetUser.email, assignedSubjects || ['PF Theory'], assignedClass, targetUser.uid).then((res: any) => {
+      grantTeacherAccess(currentUser.email, targetUser.email, assignedSubjects || [], assignedClass || '', targetUser.uid).then((res: any) => {
         if (res.success && res.user) {
           setUsers((prev) =>
             prev
@@ -245,7 +246,6 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
   const navItems = [
     { id: 'dashboard' as AdminViewType, label: 'Dashboard', icon: LayoutDashboard },
     { id: 'users' as AdminViewType, label: 'User Management', icon: Users },
-    { id: 'roles' as AdminViewType, label: 'Role Assignment', icon: Shield },
     { id: 'panel-access' as AdminViewType, label: 'Panel Access Mgmt', icon: Shield, highlight: true },
     { id: 'classes' as AdminViewType, label: 'Classes & Sections', icon: Layers },
     { id: 'subjects' as AdminViewType, label: 'Subjects Management', icon: BookOpen },
@@ -492,25 +492,10 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
             <UserManagementView
               users={users}
               onUpdateUser={handleUpdateUser}
-              onOpenRoleAssignment={(u) => {
-                setRoleAssignmentTargetUser(u || null);
-                setRoleAssignmentTargetClass(undefined);
-                setActiveView('roles');
-              }}
+              onNavigateToTeacherAssignments={() => setActiveView('teachers')}
+              onNavigateToCRAssignments={() => setActiveView('crs')}
               onRefreshFirebase={handleRefreshFirebaseUsers}
               isFirebaseSyncing={isFirebaseSyncing}
-            />
-          )}
-
-          {activeView === 'roles' && (
-            <RoleAssignmentView
-              users={users}
-              initialSelectedUser={roleAssignmentTargetUser}
-              onSaveRole={handleSaveRole}
-              onCancel={() => setActiveView('users')}
-              onRefreshFirebase={handleRefreshFirebaseUsers}
-              isFirebaseSyncing={isFirebaseSyncing}
-              preselectedClass={roleAssignmentTargetClass}
             />
           )}
 
@@ -522,29 +507,43 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
             />
           )}
 
-          {activeView === 'classes' && <ClassesSectionsView users={users} />}
+          {activeView === 'classes' && (
+            <ClassesSectionsView
+              users={users}
+              onNavigateToCRAssignments={(className) => {
+                setSelectedClassForCR(className || null);
+                setActiveView('crs');
+              }}
+              adminEmail={currentUser.email}
+            />
+          )}
 
-          {activeView === 'subjects' && <SubjectsManagementView />}
+          {activeView === 'subjects' && (
+            <SubjectsManagementView
+              users={users}
+              adminEmail={currentUser.email}
+              onNavigateToTeacherAssignments={(subjId) => {
+                setSelectedSubjectForTeacher(subjId || null);
+                setActiveView('teachers');
+              }}
+            />
+          )}
 
           {activeView === 'teachers' && (
             <TeacherAssignmentsView
               users={users}
-              onOpenRoleAssignment={(u) => {
-                setRoleAssignmentTargetUser(u);
-                setRoleAssignmentTargetClass(undefined);
-                setActiveView('roles');
-              }}
+              adminEmail={currentUser.email}
+              initialSelectedSubjectId={selectedSubjectForTeacher}
+              onNavigateToSubjects={() => setActiveView('subjects')}
             />
           )}
 
           {activeView === 'crs' && (
             <CRAssignmentsView
               users={users}
-              onOpenRoleAssignment={(u, targetClass) => {
-                setRoleAssignmentTargetUser(u || null);
-                setRoleAssignmentTargetClass(targetClass);
-                setActiveView('roles');
-              }}
+              adminEmail={currentUser.email}
+              initialSelectedClass={selectedClassForCR}
+              onNavigateToClasses={() => setActiveView('classes')}
             />
           )}
 

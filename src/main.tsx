@@ -2,11 +2,14 @@ import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 import { BrandingProvider } from './context/BrandingContext';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 
 createRoot(document.getElementById('root')!).render(
-  <BrandingProvider>
-    <App />
-  </BrandingProvider>
+  <ErrorBoundary>
+    <BrandingProvider>
+      <App />
+    </BrandingProvider>
+  </ErrorBoundary>
 );
 
 // Register Service Worker for offline caching & instant speed rendering

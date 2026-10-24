@@ -1,7 +1,7 @@
 # AWKUM ClassHub — Technical Architecture & System Map
 
 **Abdul Wali Khan University Mardan · Garden Campus**  
-*Document Version: 2.1 · Status: Authoritative System Documentation*
+*Document Version: 2.2 · Status: Authoritative System Documentation*
 
 ---
 
@@ -10,8 +10,8 @@
 AWKUM ClassHub is a multi-role web application designed for the Department of Computer Science & Software Engineering at Abdul Wali Khan University Mardan (AWKUM). It provides authenticated portals for:
 1. **Students**: Access to daily schedules, course materials, assignment submissions, personal attendance tracking, and university announcements.
 2. **Class Representatives (CRs)**: Operational tools for recording single daily whole-class attendance, generating printable A4 PDF reports, managing rosters, and dispatching faculty alerts.
-3. **Faculty / Teachers**: Subject courseware management, student evaluation, and schedule tracking.
-4. **Master Administrator**: Complete governance over user roles, CR appointments/revocations, faculty mappings, university branding, and security audit logs.
+3. **Faculty / Teachers**: Subject courseware management, assignment publication, student grading, real-time CR alert notifications, and schedule tracking.
+4. **Master Administrator**: Complete governance over user roles, CR appointments/revocations, faculty mappings, curriculum subjects, university branding, and security audit logs.
 
 ```mermaid
 graph TD
@@ -220,6 +220,21 @@ sequenceDiagram
    - Hides CR entry points from Home dashboard and SideDrawer.
    - Subsequent calls to `/api/cr/verify-operation` receive `403 Forbidden`.
 
+### 5.3 Subject-Wise Teacher Assignment & Management Architecture
+Subject management is strictly scoped per subject to ensure accurate authorization and multi-subject faculty governance:
+1. **Selection First (Step 1)**: Master Admin filters, searches, and selects an authentic curriculum subject from Firestore (`subjects`).
+2. **Subject Scoped Workspace (Step 2)**: Operations are isolated strictly to the selected subject. Current active teacher status, course code, credit hours, and historical learning resources are displayed.
+3. **Verified Faculty Discovery (Step 3)**: Master Admin searches verified faculty by exact registered Gmail from Firebase Auth/Firestore user registry. The system confirms `emailVerified === true` and displays the verified Firebase UID, name, and email before selection.
+4. **Subject-Scoped Assignment (Step 4)**: 
+   - Generates persistent assignment record in `subjectTeacherAssignments/{assignmentId}` linking `subjectId` and `teacherUid`.
+   - Updates `subjects/{subjectId}` with `assignedTeacher`, `teacherEmail`, `teacherUid`, `teacherAssignedAt`.
+   - Preserves non-faculty roles (e.g. `roles: ['student', 'teacher']`).
+5. **Dynamic Teacher Multi-Subject Workspace**:
+   - `TeacherLayout.tsx` dynamically subscribes via `subscribeToTeacherAssignedSubjects({ uid, email })`.
+   - Teachers assigned to multiple courses can toggle between workspaces via a dedicated dropdown.
+   - If zero subjects are assigned, renders an informative empty state with verified credentials and instructions to contact Master Admin.
+6. **Preserved Learning Resources Guarantee**: Revoking or reassigning a teacher never cascades to delete course documents (`documents`), assignments (`assignments`), or student submissions (`submissions`).
+
 ---
 
 ## 6. Daily Whole-Class Attendance Architecture
@@ -296,14 +311,18 @@ If an error was made on a finalized date:
 
 ---
 
-## 10. Known Implementation Limitations & Technical Roadmap
+## 10. Four-Portal Coordinated Workspaces & Persistent Role Replacement
 
-1. **Static Initial Subjects (`src/data/portalData.ts`)**:
-   - *Current State*: Default subjects (*PF Theory, PF Lab, Management, English, Maths, Physics*) and teachers are initialized as static constants.
-   - *Roadmap*: Complete dynamic CRUD interface in the Admin Control Room to pull subjects entirely from Firestore `subjects` collection.
-2. **Server Memory Sync Fallback**:
-   - *Current State*: When Firebase Admin SDK credentials are not configured in local development, `server.ts` uses an in-memory Map mirror for fast prototyping.
-   - *Roadmap*: Require full Service Account JSON in staging and production environments.
-3. **Teacher Portal Full Implementation**:
-   - *Current State*: Teacher logins display `UnavailablePortalScreen.tsx` with instructor advisory message.
-   - *Roadmap*: Expand full Teacher Portal for direct syllabus uploading and grade assignment.
+1. **Curriculum Subjects Persistence (`src/lib/subjectService.ts`)**:
+   - Master Admin can dynamically add, edit, and assign teachers to curriculum subjects.
+   - Synchronized in real time with Cloud Firestore `subjects` collection and mirrored across all portals.
+2. **Teacher Replacement & Workspace Continuity**:
+   - When Master Admin reassigns or appoints a new teacher for a course, the new faculty member automatically inherits the persistent subject workspace.
+   - All courseware documents (`documents`), assignments (`assignments`), student submissions (`submissions`), and grades (`grades`) remain intact and attached to the subject.
+3. **CR Replacement & Class Attendance Continuity**:
+   - Canonical whole-class daily attendance sessions (`attendanceSessions/${classId}_${date}`) and enrolled student rosters persist without disruption when a Class Representative is replaced or revoked.
+   - Revoking CR status preserves the underlying student profile and credentials.
+4. **Real-Time Faculty Alerts**:
+   - CR arrival notifications stream live to the Teacher Portal dashboard via `subscribeToTeacherIncomingAlerts`.
+5. **In-Built Document Viewer**:
+   - Fully client-side responsive viewer supporting PDF (with iframe embedding and external link fallback), PPT/PPTX presentation mode with slide navigation and concept outlines, and DOC/DOCX reader mode with zoom (70%–150%) and page controls.

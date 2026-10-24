@@ -227,7 +227,7 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
                       <div className={`p-1.5 rounded-lg ${activeTab === 'assignments' ? 'bg-[#493222] text-[#FFF9F1]' : 'bg-[#EFE3D3] text-[#493222]'}`}>
                         <ClipboardList className="w-4 h-4" />
                       </div>
-                      <span>Assignments & Tasks</span>
+                      <span>Assignments</span>
                     </div>
                     {pendingAssignmentsCount > 0 ? (
                       <span className="px-2 py-0.5 bg-[#C84B31] text-white text-[10px] font-bold rounded-full">

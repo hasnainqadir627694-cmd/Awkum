@@ -21,15 +21,18 @@ AWKUM ClassHub persists data in **Google Cloud Firestore** (NoSQL document datab
 | Collection Name | Document ID Pattern | Purpose / Content | Status | Allowed Readers | Allowed Writers |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `users` | Normalized Email (`name_domain_com`) or UID | Registered student, CR, teacher, and admin profiles | **Implemented** | Authenticated Users | Master Admin; Self (limited fields) |
+| `classes` | Custom Class ID (e.g. `BSSE_1A`) | Admin-managed academic classes & sections | **Implemented** | Authenticated Users / Public | Master Admin Only |
+| `subjects` | Custom Subject Code / ID (e.g. `CS-101`) | Dynamically configured curriculum subjects & teacher assignments | **Implemented** | Authenticated Users / Public | Master Admin Only |
 | `crAssignments` | `cr_{email_slug}_{timestamp}` | Active & historical CR authorizations bound to UID and Gmail | **Implemented** | Master Admin; Assigned CR | Master Admin Only |
+| `subjectTeacherAssignments` | `sta_{subjectId}_{teacherUid}_{timestamp}` | Subject-specific teacher assignments bound to verified UID and subjectId | **Implemented** | Authenticated Users | Master Admin Only |
 | `attendanceSessions` | `{classId}_{YYYY-MM-DD}` | Single daily whole-class attendance record per section | **Implemented** | Authenticated Students & CRs | Authorized CR & Master Admin |
 | `auditLogs` | Auto-generated UID | Administrative, security, and role change audit logs | **Implemented** | Master Admin Only | Authenticated Applet (append-only) |
 | `branding` | `current` | University logos, bottom graphics, and visual scales | **Implemented** | Public (read-only) | Master Admin Only |
+| `documents` | Auto-generated UID | Course documents, lectures, and lab sheets attached to subjectId | **Implemented** | Authenticated Students & Faculty | Authorized Faculty & Admin |
+| `assignments` | Auto-generated UID | Course homework & assignments scoped to subjectId & targetClass | **Implemented** | Authenticated Students & Faculty | Authorized Faculty & Admin |
 | `submissions` | Auto-generated UID | Student coursework submissions with Cloudinary attachments | **Implemented** | Student owner & Faculty | Student owner |
 | `announcements` | Auto-generated UID | Departmental notices and urgent university broadcasts | **Implemented** | Authenticated Users | Master Admin |
-| `subjects` | `{code_slug}` | Dynamically configured semester subjects | **In Progress** | Public / Students | Master Admin |
-| `schedules` | Auto-generated UID | Timetable class slots mapped to sections and rooms | **In Progress** | Authenticated Students | Master Admin |
-| `teacherAssignments` | Auto-generated UID | Faculty subject & section assignments | **Planned** | Master Admin & Faculty | Master Admin Only |
+| `schedules` | Auto-generated UID | Timetable class slots mapped to sections and rooms | **Implemented** | Authenticated Students | Master Admin |
 
 ---
 
@@ -185,6 +188,52 @@ interface BrandingDocument {
   lastUpdated: string;             // Human date of last update
   updatedBy: string;               // Admin email who performed update
   version: number;                 // Monotonically increasing revision version
+}
+```
+
+---
+
+### 3.7 `classes` Collection
+**Path**: `/classes/{classId}`  
+**Purpose**: Stores configured academic classes and sections (programs, shifts, semesters, appointed CR, and enrolled student count).
+
+```typescript
+interface ClassSectionDocument {
+  id: string;                      // Identifier / Name (e.g. 'BSSE 1A', 'BSCS 3A')
+  name: string;                    // Official section name (e.g. 'BSSE 1A')
+  department: string;             // Academic department (e.g. 'Software Engineering')
+  program: string;                // Degree program (e.g. 'BS Software Engineering')
+  semester: string;               // Academic semester (e.g. '1st Semester')
+  shift: 'Morning' | 'Evening';    // Academic session shift
+  session: string;                // Session years (e.g. '2026 – 2030')
+  crEmail?: string;               // Assigned Class Representative email
+  crName?: string;                // Assigned Class Representative name
+  enrolledCount?: number;         // Real-time enrolled student count
+  isActive: boolean;              // Administrative active status
+  createdAt?: FirebaseFirestore.FieldValue; // Creation timestamp
+}
+```
+
+---
+
+### 3.8 `subjects` Collection
+**Path**: `/subjects/{subjectId}`  
+**Purpose**: Stores curriculum subjects, course codes, credit hours, assigned class scopes, and appointed faculty accounts.
+
+```typescript
+interface SubjectDocument {
+  id: string;                      // Course code or slug (e.g. 'CS-101', 'SE-204')
+  name: string;                    // Course title (e.g. 'Programming Fundamentals')
+  code: string;                    // Course code (e.g. 'CS-101')
+  creditHours: number;             // Credit hours (e.g. 3, 4)
+  assignedClass?: string;          // Class/section scope (e.g. 'BSSE 1A' or all)
+  teacherUid?: string;             // Verified Firebase UID of assigned faculty member
+  assignedTeacher?: string;        // Display name of assigned teacher
+  teacherEmail?: string;           // Verified university email of assigned teacher
+  description?: string;            // Course description / syllabus notes
+  status: 'active' | 'inactive';   // Course operational status
+  isActive: boolean;              // Active visibility flag
+  createdAt?: FirebaseFirestore.FieldValue; // Creation timestamp
 }
 ```
 

@@ -80,6 +80,7 @@ export const TeacherNoticesView: React.FC<TeacherNoticesViewProps> = ({
         urgent: isUrgent,
         teacherEmail: teacher.email,
         teacherName: teacher.name,
+        targetClass: selectedSubject.assignedClass || teacher.assignedClass || 'BSSE 1A',
       });
 
       setIsPublishing(false);
@@ -109,8 +110,8 @@ export const TeacherNoticesView: React.FC<TeacherNoticesViewProps> = ({
       <div className="bg-[#FFF9F1] border border-[#E6D8C7] rounded-3xl p-5 shadow-2xs space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h1 className="text-xl font-bold text-[#38271C]">
-              Course Notices & Announcements ({selectedSubject.name})
+            <h1 className="text-xl font-extrabold text-[#38271C]">
+              Course Notices & Announcements — <span className="text-[#493222] underline decoration-amber-600/40">{selectedSubject.name}</span>
             </h1>
             <p className="text-xs text-[#806A56] mt-0.5">
               Publish official subject updates, quiz alerts, and lab guidelines for {selectedSubject.code}

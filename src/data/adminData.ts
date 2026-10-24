@@ -32,6 +32,19 @@ export interface AdminUser {
   teacherRevokedAt?: string;
   teacherRevocationReason?: string;
   isFirebaseUser?: boolean;
+  emailVerified?: boolean;
+  verifiedAt?: string;
+}
+
+export interface UserAggregateStats {
+  totalAccounts: number;
+  verifiedAccounts: number;
+  unverifiedAccounts: number;
+  studentCount: number;
+  crCount: number;
+  teacherCount: number;
+  adminCount: number;
+  lastReconciledAt: string;
 }
 
 export function isUserCR(user: AdminUser | null | undefined): boolean {
@@ -55,9 +68,34 @@ export interface SubjectConfig {
   name: string;
   code: string;
   assignedTeacher: string | null;
-  teacherEmail?: string;
+  teacherEmail?: string | null;
+  teacherUid?: string | null;
   status: 'Assigned' | 'Unassigned';
   creditHours: number;
+  assignedClass?: string;
+  description?: string;
+  isActive?: boolean;
+  teacherAssignedAt?: string | null;
+  assignmentId?: string | null;
+  lastConfirmedActiveAt?: string | null;
+}
+
+export interface SubjectTeacherAssignment {
+  id: string; // e.g. "sta_subj_pf_uid123"
+  subjectId: string;
+  subjectName: string;
+  subjectCode: string;
+  assignedClass?: string;
+  teacherUid: string;
+  teacherEmail: string;
+  teacherName: string;
+  status: 'active' | 'revoked';
+  assignedBy: string;
+  assignedAt: string;
+  revokedBy?: string | null;
+  revokedAt?: string | null;
+  revocationReason?: string | null;
+  lastConfirmedActiveAt?: string | null;
 }
 
 export interface AuditLogItem {
@@ -113,37 +151,14 @@ export const DEFAULT_BRANDING: BrandingConfig = {
   version: 1,
 };
 
-// 6 Official AWKUM Semester Subjects
-export const OFFICIAL_SUBJECTS = [
-  'PF Theory',
-  'PF Lab',
-  'Management',
-  'English',
-  'Maths',
-  'Physics',
-] as const;
+// Official Subjects Catalog (Purely empty baseline - Master Admin dynamically configures subjects)
+export const OFFICIAL_SUBJECTS: readonly string[] = [];
 
-// Initial Classes & Sections for AWKUM Computer Science & Software Engineering
-export const INITIAL_CLASSES: ClassSection[] = [
-  { id: 'c0', class: 'BSSE', section: '1A', totalStudents: 0, assignedCR: null, status: 'Active' },
-  { id: 'c1', class: 'BSCS', section: '1A', totalStudents: 0, assignedCR: null, status: 'Active' },
-  { id: 'c2', class: 'BSCS', section: '1B', totalStudents: 0, assignedCR: null, status: 'Active' },
-  { id: 'c3', class: 'BSCS', section: '2A', totalStudents: 0, assignedCR: null, status: 'Active' },
-  { id: 'c4', class: 'BSCS', section: '2B', totalStudents: 0, assignedCR: null, status: 'Active' },
-  { id: 'c5', class: 'BSCS', section: '3A', totalStudents: 0, assignedCR: null, status: 'Active' },
-  { id: 'c6', class: 'BSCS', section: '3B', totalStudents: 0, assignedCR: null, status: 'Active' },
-  { id: 'c7', class: 'BSCS', section: '4A', totalStudents: 0, assignedCR: null, status: 'Active' },
-];
+// Initial Classes & Sections (Purely empty baseline - Master Admin dynamically configures classes)
+export const INITIAL_CLASSES: ClassSection[] = [];
 
-// Initial Subject Management Data (Matching Mockup 6)
-export const INITIAL_SUBJECTS: SubjectConfig[] = [
-  { id: 's1', name: 'PF Theory', code: 'PF101', assignedTeacher: 'Dr. Ali Khan', teacherEmail: 'ali.khan123@gmail.com', status: 'Assigned', creditHours: 3 },
-  { id: 's2', name: 'PF Lab', code: 'PF102', assignedTeacher: 'Ms. Sara Ahmed', teacherEmail: 'sara.teacher@awkum.edu.pk', status: 'Assigned', creditHours: 1 },
-  { id: 's3', name: 'Management', code: 'MG103', assignedTeacher: 'Dr. Usman Ghani', teacherEmail: 'usman.mgt@awkum.edu.pk', status: 'Assigned', creditHours: 3 },
-  { id: 's4', name: 'English', code: 'EN104', assignedTeacher: 'Ms. Ayesha', teacherEmail: 'ayesha.eng@awkum.edu.pk', status: 'Assigned', creditHours: 3 },
-  { id: 's5', name: 'Maths', code: 'MA105', assignedTeacher: 'Dr. Imran', teacherEmail: 'imran.maths@awkum.edu.pk', status: 'Assigned', creditHours: 3 },
-  { id: 's6', name: 'Physics', code: 'PH106', assignedTeacher: 'Dr. Farhan', teacherEmail: 'farhan.physics@awkum.edu.pk', status: 'Assigned', creditHours: 3 },
-];
+// Initial Subject Management Data (Purely empty baseline - Master Admin dynamically configures curriculum)
+export const INITIAL_SUBJECTS: SubjectConfig[] = [];
 
 // Initial Users List (Clean, born new with master admin)
 export const INITIAL_USERS: AdminUser[] = [

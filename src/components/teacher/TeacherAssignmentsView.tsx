@@ -121,8 +121,8 @@ export const TeacherAssignmentsView: React.FC<TeacherAssignmentsViewProps> = ({
       <div className="bg-[#FFF9F1] border border-[#E6D8C7] rounded-3xl p-5 shadow-2xs space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h1 className="text-xl font-bold text-[#38271C]">
-              Course Assignments ({selectedSubject.name})
+            <h1 className="text-xl font-extrabold text-[#38271C]">
+              Course Tasks & Assignments — <span className="text-[#493222] underline decoration-amber-600/40">{selectedSubject.name}</span>
             </h1>
             <p className="text-xs text-[#806A56] mt-0.5">
               Create mandatory course tasks, set deadlines, and review student work for {selectedSubject.code}
