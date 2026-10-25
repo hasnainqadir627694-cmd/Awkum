@@ -6,6 +6,7 @@ import { brandService } from '../lib/BrandService';
 interface BrandingContextType {
   branding: BrandingConfig;
   logoUrl: string;
+  pwaIconUrl: string;
   bottomImageUrl: string;
   bottomImageEnabled: boolean;
   bottomImageScale: number;
@@ -19,6 +20,7 @@ interface BrandingContextType {
 const BrandingContext = createContext<BrandingContextType>({
   branding: DEFAULT_BRANDING,
   logoUrl: '',
+  pwaIconUrl: '',
   bottomImageUrl: '',
   bottomImageEnabled: false,
   bottomImageScale: 100,
@@ -65,6 +67,7 @@ export const BrandingProvider: React.FC<{ children: ReactNode }> = ({ children }
       value={{
         branding,
         logoUrl: branding.logoUrl || '',
+        pwaIconUrl: branding.pwaIconUrl || branding.logoUrl || '',
         bottomImageUrl: branding.bottomImageUrl || '',
         bottomImageEnabled: branding.bottomImageEnabled || false,
         bottomImageScale: branding.bottomImageScale || 100,

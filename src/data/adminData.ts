@@ -120,6 +120,7 @@ export interface AnnouncementItem {
 
 export interface BrandingConfig {
   logoUrl: string;
+  pwaIconUrl?: string;
   bottomImageUrl: string;
   bottomImageEnabled?: boolean;
   bottomImageScale?: number;
@@ -130,6 +131,7 @@ export interface BrandingConfig {
   updatedBy: string;
   version: number;
   previousLogoUrl?: string;
+  previousPwaIconUrl?: string;
   previousBottomImageUrl?: string;
   previousBottomImageEnabled?: boolean;
   previousBottomImageScale?: number;
@@ -140,8 +142,9 @@ export interface BrandingConfig {
 
 export const DEFAULT_BRANDING: BrandingConfig = {
   logoUrl: '/favicon.png',
-  bottomImageUrl: '',
-  bottomImageEnabled: false,
+  pwaIconUrl: '/icon-512.png',
+  bottomImageUrl: '/images/awkum-campus-building.jpg',
+  bottomImageEnabled: true,
   bottomImageScale: 100,
   bgImageUrl: '',
   bgImageEnabled: false,

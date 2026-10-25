@@ -1,13 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
   User,
-  Users,
   Lock,
   Eye,
   EyeOff,
   ArrowRight,
   AlertCircle,
-  Sparkles,
   Check,
   X,
   Mail,
@@ -18,8 +16,11 @@ import {
 import { AwkumEmblem } from '../common/AwkumLogo';
 import { EmailVerificationPendingScreen } from './EmailVerificationPendingScreen';
 import { auth } from '../../lib/firebase';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
-import { subscribeToBranding, DEFAULT_BRANDING, getCachedBranding, saveCachedBranding, getPublishedBranding } from '../../lib/brandingService';
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+} from 'firebase/auth';
+import { subscribeToBranding, getCachedBranding, saveCachedBranding, getPublishedBranding } from '../../lib/brandingService';
 import { resolveUserRole, registerStudentAccount } from '../../lib/authService';
 import { subscribeToClasses } from '../../lib/classService';
 import { AdminUser, BrandingConfig, UserRole, ClassSection } from '../../data/adminData';
@@ -147,7 +148,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           return;
         } else if (code === 'auth/user-not-found') {
           setIsLoading(false);
-          setErrorMessage('No account found with this email in Firebase Authentication. Please click "Register New Account" below.');
+          setErrorMessage('No account found with this email in Firebase Authentication. Please click "Register here" below.');
           return;
         } else if (code === 'auth/too-many-requests') {
           setIsLoading(false);
@@ -268,7 +269,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         `Registration successful! Enrolled in ${selectedClass || department}. Student ID: ${result.user?.studentId}`
       );
 
-      // Smooth direct sign-in into 1st semester student portal
+      // Smooth direct sign-in into student portal
       setTimeout(() => {
         if (result.user && result.role) {
           onLoginSuccess(result.user, result.role);
@@ -299,7 +300,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
   return (
     <div
-      className="min-h-screen bg-[#F8F0E5] text-[#38271C] flex flex-col justify-between selection:bg-[#493222] selection:text-[#FFF9F1] relative overflow-x-hidden"
+      className="min-h-screen bg-[#FBF6EE] text-[#332014] flex flex-col justify-between selection:bg-[#462D1D] selection:text-[#FFF9F2] relative overflow-x-hidden"
       style={
         branding.bgImageEnabled && branding.bgImageUrl
           ? {
@@ -311,74 +312,65 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           : undefined
       }
     >
+      {/* Optional Background Tint when custom bg image is enabled */}
       {branding.bgImageEnabled && branding.bgImageUrl && (
-        <div className="absolute inset-0 bg-[#F8F0E5]/50 pointer-events-none z-0" />
+        <div className="absolute inset-0 bg-[#FBF6EE]/75 pointer-events-none z-0" />
       )}
-      {/* Upper Content: Branding + Form (Centered, sitting directly on cream canvas) */}
-      <div className="w-full max-w-sm sm:max-w-md mx-auto px-5 pt-8 sm:pt-10 pb-2 flex-1 flex flex-col items-center z-10">
-        {/* 1. University Branding (Real-time synchronized) */}
-        <div className="flex flex-col items-center text-center mb-4">
-          {/* University Logo (No cage, no borders, slightly bigger) */}
-          <div className="mb-3.5 flex items-center justify-center">
-            <AwkumEmblem size={56} overrideLogoUrl={branding.logoUrl} />
+
+      {/* UPPER CONTENT: BRANDING HEADER + FORM */}
+      <div className="w-full max-w-[430px] mx-auto px-4 pt-10 sm:pt-12 pb-4 flex-1 flex flex-col items-center z-20">
+        
+        {/* BRANDING HEADER (Exact match to reference mockup) */}
+        <div className="flex flex-col items-center text-center">
+          {/* AWKUM Official Crest */}
+          <div className="mb-2.5 flex items-center justify-center">
+            <AwkumEmblem size={86} overrideLogoUrl={branding.logoUrl} className="drop-shadow-xs" />
           </div>
 
-          <h1 className="font-serif text-2xl font-bold tracking-wider text-[#38271C]">
+          {/* "AWKUM" Serif Heading */}
+          <h1
+            className="text-[32px] sm:text-[36px] font-extrabold tracking-[0.16em] text-[#332014] uppercase leading-none"
+            style={{ fontFamily: "var(--font-serif, 'Cinzel', serif)" }}
+          >
             AWKUM
           </h1>
-          <p className="text-xs font-medium text-[#6B5441] mt-0.5">
+
+          {/* "Abdul Wali Khan University Mardan" Subtitle */}
+          <p
+            className="text-[13px] sm:text-[14px] font-medium text-[#58412F] tracking-wide mt-1 leading-tight"
+            style={{ fontFamily: "var(--font-serif, 'Cinzel', serif)" }}
+          >
             Abdul Wali Khan University Mardan
           </p>
 
-          <h2 className="text-2xl font-bold text-[#2E1F14] mt-1.5 tracking-tight">
+          {/* Graduation Cap Center Glyph with Dual Flanking Hairlines */}
+          <div className="flex items-center justify-center gap-3 my-2 w-full max-w-[210px]">
+            <div className="flex-1 h-[1px] bg-[#D4C0AD]" />
+            <GraduationCap className="w-4 h-4 text-[#614532]" strokeWidth={2.2} />
+            <div className="flex-1 h-[1px] bg-[#D4C0AD]" />
+          </div>
+
+          {/* "ClassHub" Bold Title */}
+          <h2 className="text-[36px] sm:text-[40px] font-bold text-[#24150E] tracking-tight leading-none">
             ClassHub
           </h2>
 
-          <div className="mt-1">
-            <span className="inline-block px-3 py-0.5 bg-[#EADBCC] text-[#4A3525] text-xs font-semibold rounded-full">
-              {authMode === 'login' ? 'Student Portal' : 'New Student Registration'}
+          {/* "UNIVERSAL PORTAL" Tag Badge */}
+          <div className="mt-2.5">
+            <span className="inline-flex items-center justify-center px-4 py-1 rounded-full bg-[#E3D1BE] text-[#4A301D] text-[10px] sm:text-[11px] font-bold tracking-[0.24em] uppercase shadow-2xs">
+              UNIVERSAL PORTAL
             </span>
           </div>
-        </div>
 
-
-
-        <div className="w-full flex items-center justify-center gap-2 p-1 bg-[#EFE3D3]/60 border border-[#E6D8C7] rounded-2xl mb-4">
-          <button
-            type="button"
-            onClick={() => {
-              setAuthMode('login');
-              setErrorMessage('');
-              setSuccessMessage('');
-            }}
-            className={`flex-1 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
-              authMode === 'login'
-                ? 'bg-[#493222] text-[#FFF9F1] shadow-xs'
-                : 'text-[#806A56] hover:text-[#38271C]'
-            }`}
-          >
-            Sign In
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setAuthMode('register');
-              setErrorMessage('');
-              setSuccessMessage('');
-            }}
-            className={`flex-1 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
-              authMode === 'register'
-                ? 'bg-[#493222] text-[#FFF9F1] shadow-xs'
-                : 'text-[#806A56] hover:text-[#38271C]'
-            }`}
-          >
-            Register New Student
-          </button>
+          {/* Tagline */}
+          <p className="text-[13px] sm:text-[14px] font-medium text-[#6B5544] mt-2">
+            One Platform for a Better Academic Experience
+          </p>
         </div>
 
         {/* Error and Success Alerts */}
         {errorMessage && (
-          <div className="w-full mb-3 p-3 bg-[#FDE8E4] border border-[#F5C2B8] rounded-xl flex items-start gap-2 text-xs text-[#C84B31]">
+          <div className="w-full mt-4 p-3.5 bg-[#FDE8E4] border border-[#F5C2B8] rounded-2xl flex items-start gap-2.5 text-xs text-[#C84B31] shadow-2xs">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
             <div className="flex-1">
               <span>{errorMessage}</span>
@@ -389,7 +381,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
                     setAuthMode('register');
                     setErrorMessage('');
                   }}
-                  className="block mt-1 font-bold underline hover:opacity-90"
+                  className="block mt-1 font-bold underline hover:opacity-90 cursor-pointer"
                 >
                   Click here to register your account →
                 </button>
@@ -399,298 +391,271 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         )}
 
         {successMessage && (
-          <div className="w-full mb-3 p-3 bg-[#EAF2E9] border border-[#C5DEC3] rounded-xl flex items-start gap-2 text-xs text-[#668064] font-semibold animate-in fade-in">
+          <div className="w-full mt-4 p-3.5 bg-[#EAF2E9] border border-[#C5DEC3] rounded-2xl flex items-start gap-2.5 text-xs text-[#557353] font-semibold animate-in fade-in shadow-2xs">
             <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
             <span>{successMessage}</span>
           </div>
         )}
 
-        {/* 2A. LOGIN FORM */}
+        {/* FORM (No outer square frame) */}
         {authMode === 'login' ? (
-          <form onSubmit={handleLoginSubmit} className="w-full space-y-3.5">
-            {/* Student ID / Email */}
-            <div>
-              <label
-                htmlFor="student-id"
-                className="block text-xs font-semibold text-[#38271C] mb-1.5"
-              >
-                Student ID or University Email
-              </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#806A56]">
-                  <User className="w-4 h-4" />
-                </div>
+          <form onSubmit={handleLoginSubmit} className="w-full space-y-3.5 mt-5">
+            {/* Field 1: University Email */}
+            <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+              {/* Left Warm Square Icon Container */}
+              <div className="w-12 h-12 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                <Mail className="w-5 h-5 stroke-[1.8]" />
+              </div>
+              {/* Text Label + Input */}
+              <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
+                <label htmlFor="login-email" className="block text-[12px] sm:text-[13px] font-semibold text-[#3D291D] leading-none mb-1 cursor-pointer">
+                  University Email
+                </label>
                 <input
-                  id="student-id"
+                  id="login-email"
                   type="text"
                   value={studentId}
                   onChange={(e) => setStudentId(e.target.value)}
-                  placeholder="e.g. 23SW1234 or student@awkum.edu.pk"
-                  className="w-full pl-10 pr-3.5 py-2.5 bg-white border border-[#D8C7B4] rounded-xl text-xs sm:text-sm text-[#38271C] placeholder-[#806A56]/60 focus:outline-none focus:ring-2 focus:ring-[#493222] focus:border-transparent transition-all shadow-2xs"
+                  placeholder="e.g. 23SW1234@awkum.edu.pk"
+                  className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal leading-normal"
+                  autoComplete="email"
                 />
               </div>
             </div>
 
-            {/* Password */}
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label
-                  htmlFor="password"
-                  className="text-xs font-semibold text-[#38271C]"
-                >
+            {/* Field 2: Password */}
+            <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+              {/* Left Warm Square Icon Container */}
+              <div className="w-12 h-12 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                <Lock className="w-5 h-5 stroke-[1.8]" />
+              </div>
+              {/* Text Label + Input */}
+              <div className="flex-1 flex flex-col justify-center min-w-0">
+                <label htmlFor="login-password" className="block text-[12px] sm:text-[13px] font-semibold text-[#3D291D] leading-none mb-1 cursor-pointer">
                   Password
                 </label>
-                <button
-                  type="button"
-                  onClick={() => setShowForgotModal(true)}
-                  className="text-xs font-medium text-[#6B5441] hover:text-[#38271C] hover:underline cursor-pointer"
-                >
-                  Forgot Password?
-                </button>
-              </div>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#806A56]">
-                  <Lock className="w-4 h-4" />
-                </div>
                 <input
-                  id="password"
+                  id="login-password"
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter your password"
-                  className="w-full pl-10 pr-10 py-2.5 bg-white border border-[#D8C7B4] rounded-xl text-xs sm:text-sm text-[#38271C] placeholder-[#806A56]/60 focus:outline-none focus:ring-2 focus:ring-[#493222] focus:border-transparent transition-all shadow-2xs"
+                  placeholder="••••••••"
+                  className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal leading-normal"
+                  autoComplete="current-password"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-[#806A56] hover:text-[#38271C] cursor-pointer"
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                >
-                  {showPassword ? (
-                    <EyeOff className="w-4 h-4" />
-                  ) : (
-                    <Eye className="w-4 h-4" />
-                  )}
-                </button>
               </div>
-            </div>
-
-            {/* Remember Me */}
-            <div className="flex items-center pt-0.5">
-              <input
-                id="remember-me"
-                type="checkbox"
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
-                className="w-4 h-4 text-[#493222] bg-white border-[#D8C7B4] rounded focus:ring-[#493222] accent-[#493222] cursor-pointer"
-              />
-              <label
-                htmlFor="remember-me"
-                className="ml-2 text-xs font-medium text-[#38271C] cursor-pointer select-none"
+              {/* Right Eye Toggle Button */}
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="p-2 text-[#8C7665] hover:text-[#3D291D] transition-colors cursor-pointer shrink-0"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
               >
-                Remember me
-              </label>
+                {showPassword ? <EyeOff className="w-5 h-5 stroke-[1.8]" /> : <Eye className="w-5 h-5 stroke-[1.8]" />}
+              </button>
             </div>
 
-            {/* Primary Login Button (Dark Espresso-Brown) */}
+            {/* Row: Remember Me & Forgot Password */}
+            <div className="flex items-center justify-between pt-1 px-1">
+              {/* Custom Rounded Dark Checkbox */}
+              <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                <div
+                  onClick={() => setRememberMe(!rememberMe)}
+                  className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors cursor-pointer ${
+                    rememberMe ? 'bg-[#462D1D] text-white' : 'bg-white border border-[#D5C2AF]'
+                  }`}
+                >
+                  {rememberMe && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                </div>
+                <span className="text-[13px] font-medium text-[#2E1D13]">Remember me</span>
+              </label>
+
+              {/* Forgot Password Link */}
+              <button
+                type="button"
+                onClick={() => setShowForgotModal(true)}
+                className="text-[13px] font-semibold text-[#2E1D13] hover:underline cursor-pointer"
+              >
+                Forgot Password?
+              </button>
+            </div>
+
+            {/* Primary Login Button (Dark Chocolate Capsule with Arrow) */}
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full py-3 px-4 bg-[#493222] hover:bg-[#38271C] active:bg-[#2B1B11] text-[#FFF9F1] font-semibold text-xs sm:text-sm rounded-xl shadow-xs hover:shadow-md transition-all flex items-center justify-center gap-2 group cursor-pointer disabled:opacity-60"
+              className="w-full py-3.5 sm:py-4 mt-2 rounded-full bg-[#462D1D] hover:bg-[#341F12] active:bg-[#28160B] text-white font-bold text-[16px] shadow-[0_8px_22px_rgba(70,45,29,0.32)] hover:shadow-[0_10px_26px_rgba(70,45,29,0.4)] flex items-center justify-center gap-2.5 transition-all cursor-pointer disabled:opacity-60"
             >
               {isLoading ? (
-                <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
               ) : (
                 <>
                   <span>Login</span>
-                  <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                  <ArrowRight className="w-5 h-5 stroke-[2.5]" />
                 </>
               )}
             </button>
 
-            {/* Switch to Register link */}
-            <div className="pt-2 text-center text-xs text-[#806A56]">
-              <span>New student and don't have an account? </span>
+            {/* Bottom Register Prompt */}
+            <div className="pt-3 text-center">
+              <p className="text-[13px] text-[#695444]">
+                New student and don&apos;t have an account?
+              </p>
               <button
                 type="button"
                 onClick={() => {
                   setAuthMode('register');
                   setErrorMessage('');
+                  setSuccessMessage('');
                 }}
-                className="font-bold text-[#493222] hover:underline cursor-pointer"
+                className="mt-1 font-bold text-[14px] text-[#2E1D13] hover:underline inline-flex items-center gap-1 cursor-pointer"
               >
-                Register here
+                <span>Register here</span>
+                <ArrowRight className="w-4 h-4 inline stroke-[2.2]" />
               </button>
             </div>
           </form>
         ) : (
-          /* 2B. REGISTRATION FORM (Full Name, Father Name, Department: Software Engineering, Automated 1st Semester) */
-          <form onSubmit={handleRegisterSubmit} className="w-full space-y-3">
+          /* REGISTRATION FORM (No outer square frame) */
+          <form onSubmit={handleRegisterSubmit} className="w-full space-y-3 mt-5">
             {/* Automated 1st Semester Banner */}
-            <div className="p-3 bg-[#EAF2E9] border border-[#C5DEC3] rounded-xl flex items-center gap-2.5 text-xs text-[#446342]">
-              <GraduationCap className="w-4 h-4 text-[#668064] shrink-0" />
+            <div className="p-3 bg-[#EAF2E9] border border-[#C5DEC3] rounded-2xl flex items-center gap-2.5 text-xs text-[#3D5C3B]">
+              <GraduationCap className="w-4 h-4 text-[#557353] shrink-0" />
               <div>
                 <span className="font-bold block">Automated Enrollment: 1st Semester</span>
-                <span className="text-[11px] text-[#668064]">
+                <span className="text-[11px] text-[#557353]">
                   New registrations are enrolled in BS Software Engineering (Fall 2026).
                 </span>
               </div>
             </div>
 
             {/* Full Name */}
-            <div>
-              <label className="block text-xs font-semibold text-[#38271C] mb-1">
-                Full Name
-              </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#806A56]">
-                  <User className="w-4 h-4" />
-                </div>
+            <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+              <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                <User className="w-4 h-4 stroke-[1.8]" />
+              </div>
+              <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
+                <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
+                  Full Name
+                </label>
                 <input
                   type="text"
                   required
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
-                  placeholder="e.g. Muhammad Hasnain"
-                  className="w-full pl-10 pr-3.5 py-2.5 bg-white border border-[#D8C7B4] rounded-xl text-xs sm:text-sm text-[#38271C] placeholder-[#806A56]/60 focus:outline-none focus:ring-2 focus:ring-[#493222]"
+                  placeholder="e.g. Muhammad Ahmad"
+                  className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
                 />
               </div>
             </div>
 
-            {/* Father's Name */}
-            <div>
-              <label className="block text-xs font-semibold text-[#38271C] mb-1">
-                Father's Name
-              </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#806A56]">
-                  <Users className="w-4 h-4" />
-                </div>
+            {/* Father Name */}
+            <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+              <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                <User className="w-4 h-4 stroke-[1.8]" />
+              </div>
+              <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
+                <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
+                  Father&apos;s Name
+                </label>
                 <input
                   type="text"
                   required
                   value={fatherName}
                   onChange={(e) => setFatherName(e.target.value)}
-                  placeholder="e.g. Abdul Qadir"
-                  className="w-full pl-10 pr-3.5 py-2.5 bg-white border border-[#D8C7B4] rounded-xl text-xs sm:text-sm text-[#38271C] placeholder-[#806A56]/60 focus:outline-none focus:ring-2 focus:ring-[#493222]"
+                  placeholder="e.g. Tariq Khan"
+                  className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
                 />
               </div>
             </div>
 
-            {/* Department (Software Engineering) */}
-            <div>
-              <label className="block text-xs font-semibold text-[#38271C] mb-1">
-                Department
-              </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#806A56]">
-                  <Building className="w-4 h-4" />
-                </div>
-                <select
-                  value={department}
-                  onChange={(e) => setDepartment(e.target.value)}
-                  className="w-full pl-10 pr-3.5 py-2.5 bg-white border border-[#D8C7B4] rounded-xl text-xs sm:text-sm font-semibold text-[#38271C] focus:outline-none focus:ring-2 focus:ring-[#493222] cursor-pointer"
-                >
-                  <option value="Software Engineering">Software Engineering (Garden Campus)</option>
-                  <option value="Computer Science">Computer Science</option>
-                </select>
+            {/* University Email */}
+            <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+              <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                <Mail className="w-4 h-4 stroke-[1.8]" />
               </div>
-            </div>
-
-            {/* Enrolled Class & Section */}
-            <div>
-              <label className="block text-xs font-semibold text-[#38271C] mb-1">
-                Enrolled Class & Section *
-              </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#806A56]">
-                  <GraduationCap className="w-4 h-4" />
-                </div>
-                {availableClasses.length === 0 ? (
-                  <div className="w-full pl-10 pr-3.5 py-2.5 bg-[#FFF3CD]/70 border border-[#F0D597] rounded-xl text-xs font-semibold text-[#856404]">
-                    No classes configured yet by administration
-                  </div>
-                ) : (
-                  <select
-                    value={selectedClass}
-                    onChange={(e) => setSelectedClass(e.target.value)}
-                    required
-                    className="w-full pl-10 pr-3.5 py-2.5 bg-white border border-[#D8C7B4] rounded-xl text-xs sm:text-sm font-semibold text-[#38271C] focus:outline-none focus:ring-2 focus:ring-[#493222] cursor-pointer"
-                  >
-                    <option value="">-- Select Your Class & Section --</option>
-                    {availableClasses.map((cls) => (
-                      <option key={cls.id} value={`${cls.class} ${cls.section}`}>
-                        {cls.class} Section {cls.section}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
-            </div>
-
-            {/* University or Personal Email */}
-            <div>
-              <label className="block text-xs font-semibold text-[#38271C] mb-1">
-                Email Address
-              </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#806A56]">
-                  <Mail className="w-4 h-4" />
-                </div>
+              <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
+                <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
+                  Email Address
+                </label>
                 <input
                   type="email"
                   required
                   value={regEmail}
                   onChange={(e) => setRegEmail(e.target.value)}
-                  placeholder="e.g. hasnain@awkum.edu.pk or personal email"
-                  className="w-full pl-10 pr-3.5 py-2.5 bg-white border border-[#D8C7B4] rounded-xl text-xs sm:text-sm text-[#38271C] placeholder-[#806A56]/60 focus:outline-none focus:ring-2 focus:ring-[#493222]"
+                  placeholder="student@awkum.edu.pk"
+                  className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
                 />
               </div>
             </div>
 
+            {/* Department & Section */}
+            <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+              <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                <Building className="w-4 h-4 stroke-[1.8]" />
+              </div>
+              <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
+                <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
+                  Enrolled Section
+                </label>
+                <select
+                  value={selectedClass}
+                  onChange={(e) => setSelectedClass(e.target.value)}
+                  className="w-full text-[13px] text-[#24150E] bg-transparent outline-none font-medium cursor-pointer"
+                >
+                  {availableClasses.map((c) => (
+                    <option key={c.id} value={`${c.class} ${c.section}`}>
+                      {c.class} — Section {c.section}
+                    </option>
+                  ))}
+                  {availableClasses.length === 0 && (
+                    <option value="BS Software Engineering 1st A">
+                      BS Software Engineering 1st — Section A
+                    </option>
+                  )}
+                </select>
+              </div>
+            </div>
+
             {/* Password */}
-            <div>
-              <label className="block text-xs font-semibold text-[#38271C] mb-1">
-                Password
-              </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#806A56]">
-                  <Lock className="w-4 h-4" />
-                </div>
+            <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+              <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                <Lock className="w-4 h-4 stroke-[1.8]" />
+              </div>
+              <div className="flex-1 flex flex-col justify-center min-w-0">
+                <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
+                  Password
+                </label>
                 <input
                   type={showRegPassword ? 'text' : 'password'}
                   required
                   value={regPassword}
                   onChange={(e) => setRegPassword(e.target.value)}
-                  placeholder="Create a password (min 6 chars)"
-                  className="w-full pl-10 pr-10 py-2.5 bg-white border border-[#D8C7B4] rounded-xl text-xs sm:text-sm text-[#38271C] placeholder-[#806A56]/60 focus:outline-none focus:ring-2 focus:ring-[#493222]"
+                  placeholder="Min 6 characters"
+                  className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowRegPassword(!showRegPassword)}
-                  className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-[#806A56] hover:text-[#38271C] cursor-pointer"
-                >
-                  {showRegPassword ? (
-                    <EyeOff className="w-4 h-4" />
-                  ) : (
-                    <Eye className="w-4 h-4" />
-                  )}
-                </button>
               </div>
+              <button
+                type="button"
+                onClick={() => setShowRegPassword(!showRegPassword)}
+                className="p-1.5 text-[#8C7665] hover:text-[#3D291D] transition-colors cursor-pointer shrink-0"
+              >
+                {showRegPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
             </div>
 
             {/* Submit Register Button */}
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full mt-2 py-3 px-4 bg-[#493222] hover:bg-[#38271C] active:bg-[#2B1B11] text-[#FFF9F1] font-semibold text-xs sm:text-sm rounded-xl shadow-xs hover:shadow-md transition-all flex items-center justify-center gap-2 group cursor-pointer disabled:opacity-60"
+              className="w-full py-3.5 sm:py-4 mt-2 rounded-full bg-[#462D1D] hover:bg-[#341F12] text-white font-bold text-[15px] shadow-[0_8px_22px_rgba(70,45,29,0.32)] flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-60"
             >
               {isLoading ? (
-                <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
               ) : (
                 <>
                   <span>Complete Registration & Open Portal</span>
-                  <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                  <ArrowRight className="w-4 h-4 stroke-[2.2]" />
                 </>
               )}
             </button>
@@ -703,22 +668,158 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
                 onClick={() => {
                   setAuthMode('login');
                   setErrorMessage('');
+                  setSuccessMessage('');
                 }}
-                className="font-bold text-[#493222] hover:underline cursor-pointer"
+                className="font-bold text-[#462D1D] hover:underline cursor-pointer"
               >
-                Sign in here
+                Sign in here →
               </button>
             </div>
           </form>
         )}
+
       </div>
 
+      {/* 6. BOTTOM CAMPUS BUILDING & FLUID OVERLAPPING WAVES (Exact match to reference mockup) */}
+      {branding.bottomImageEnabled && (branding.bottomImageUrl || '/images/awkum-campus-building.jpg') && (
+        <div className="w-full relative mt-auto overflow-hidden pointer-events-none select-none z-10 flex flex-col justify-end">
+          
+          {/* Building image container */}
+          <div className="relative w-full">
+            {/* Soft top-edge feather blend into canvas */}
+            <div className="absolute inset-x-0 top-0 h-10 sm:h-14 bg-linear-to-b from-[#FBF6EE] to-transparent z-10 pointer-events-none" />
 
+            <img
+              src={branding.bottomImageUrl || '/images/awkum-campus-building.jpg'}
+              alt="AWKUM Campus Building"
+              className="w-full h-auto min-h-[260px] sm:min-h-[340px] md:min-h-[420px] max-h-[64vh] object-cover object-bottom block"
+              style={{
+                transform:
+                  branding.bottomImageScale && branding.bottomImageScale !== 100
+                    ? `scale(${branding.bottomImageScale / 100})`
+                    : undefined,
+                transformOrigin: 'bottom center',
+              }}
+              onError={(e) => {
+                (e.currentTarget as HTMLElement).style.display = 'none';
+              }}
+            />
+
+            {/* FLOWING MULTI-LAYERED WAVE RIBBONS AT THE BOTTOM OF THE BUILDING */}
+            <div className="absolute bottom-0 inset-x-0 w-full h-[95px] sm:h-[130px] md:h-[155px] lg:h-[175px] pointer-events-none z-20 overflow-hidden">
+              <svg
+                viewBox="0 0 1440 260"
+                className="w-full h-full"
+                preserveAspectRatio="none"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <defs>
+                  {/* Primary deep chocolate gradient */}
+                  <linearGradient id="waveGradDeep" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stopColor="#25140B" />
+                    <stop offset="45%" stopColor="#43291B" />
+                    <stop offset="100%" stopColor="#301A0E" />
+                  </linearGradient>
+
+                  {/* Warm amber caramel gradient */}
+                  <linearGradient id="waveGradCaramel" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stopColor="#A88B73" />
+                    <stop offset="45%" stopColor="#C9B098" />
+                    <stop offset="100%" stopColor="#96775F" />
+                  </linearGradient>
+
+                  {/* Golden-tan glowing ribbon gradient */}
+                  <linearGradient id="waveGradGold" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stopColor="#DFC8B2" />
+                    <stop offset="50%" stopColor="#B39379" />
+                    <stop offset="100%" stopColor="#8C6E56" />
+                  </linearGradient>
+
+                  {/* Silk champagne cream accent gradient */}
+                  <linearGradient id="waveGradCream" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stopColor="#FFF9F2" stopOpacity="0.9" />
+                    <stop offset="50%" stopColor="#F5ECE0" stopOpacity="0.98" />
+                    <stop offset="100%" stopColor="#FFF9F2" stopOpacity="0.85" />
+                  </linearGradient>
+
+                  {/* Front dark chocolate wave */}
+                  <linearGradient id="waveGradFront" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stopColor="#362014" />
+                    <stop offset="35%" stopColor="#4D3120" />
+                    <stop offset="75%" stopColor="#2B160C" />
+                    <stop offset="100%" stopColor="#1E0E06" />
+                  </linearGradient>
+
+                  {/* Soft atmospheric depth shadow */}
+                  <filter id="waveShadow" x="-5%" y="-20%" width="110%" height="145%" filterUnits="userSpaceOnUse">
+                    <feDropShadow dx="0" dy="-4" stdDeviation="5" floodColor="#180C06" floodOpacity="0.25" />
+                  </filter>
+                </defs>
+
+                {/* Layer 1: Ambient soft background wave surging from left */}
+                <path
+                  d="M0,170 C240,215 480,125 720,165 C960,205 1200,105 1440,145 V260 H0 Z"
+                  fill="url(#waveGradCaramel)"
+                  opacity="0.55"
+                />
+
+                {/* Layer 2: Rolling caramel-gold swell with sweeping crests */}
+                <path
+                  d="M0,135 C180,185 340,90 560,135 C780,180 1020,65 1260,110 C1340,125 1400,110 1440,100 V260 H0 Z"
+                  fill="url(#waveGradGold)"
+                  opacity="0.88"
+                />
+
+                {/* Layer 3: Silk cream accent ribbon along middle crest */}
+                <path
+                  d="M0,140 C180,190 340,95 560,140 C780,185 1020,70 1260,115 C1340,130 1400,115 1440,105 V260 H0 Z"
+                  fill="url(#waveGradCream)"
+                  opacity="0.92"
+                />
+
+                {/* Layer 4: Deep rich chocolate main surging wave with natural depth shadow */}
+                <path
+                  d="M0,150 C220,85 440,215 700,140 C960,65 1180,175 1440,115 V260 H0 Z"
+                  fill="url(#waveGradDeep)"
+                  filter="url(#waveShadow)"
+                />
+
+                {/* Layer 5: Fine champagne highlight contour tracing the chocolate crest */}
+                <path
+                  d="M0,152 C220,87 440,217 700,142 C960,67 1180,177 1440,117"
+                  stroke="url(#waveGradCream)"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  fill="none"
+                  opacity="0.8"
+                />
+
+                {/* Layer 6: Foreground undulating dark chocolate swell framing the bottom */}
+                <path
+                  d="M0,180 C260,230 520,150 780,190 C1040,230 1280,140 1440,170 V260 H0 Z"
+                  fill="url(#waveGradFront)"
+                />
+
+                {/* Layer 7: Golden rim highlight along the foreground curl */}
+                <path
+                  d="M0,182 C260,232 520,152 780,192 C1040,232 1280,142 1440,172"
+                  stroke="#DFC5AF"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  fill="none"
+                  opacity="0.5"
+                />
+              </svg>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Forgot Password Modal */}
       {showForgotModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
-          <div className="bg-[#FFF9F1] border border-[#E6D8C7] rounded-2xl p-5 max-w-sm w-full shadow-2xl animate-in zoom-in-95">
+          <div className="bg-[#FFF9F1] border border-[#E6D8C7] rounded-3xl p-6 max-w-sm w-full shadow-2xl animate-in zoom-in-95">
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-bold text-sm text-[#38271C]">
                 Reset Your Password
@@ -755,7 +856,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
                     setForgotSent(false);
                     setForgotEmail('');
                   }}
-                  className="mt-3 px-4 py-1.5 bg-[#493222] text-[#FFF9F1] text-xs font-bold rounded-xl cursor-pointer"
+                  className="mt-3 px-4 py-1.5 bg-[#462D1D] text-[#FFF9F1] text-xs font-bold rounded-xl cursor-pointer"
                 >
                   Done
                 </button>
@@ -780,7 +881,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
                     value={forgotEmail}
                     onChange={(e) => setForgotEmail(e.target.value)}
                     placeholder="student@awkum.edu.pk"
-                    className="w-full px-3 py-2 bg-white border border-[#D8C7B4] rounded-xl text-xs text-[#38271C] placeholder-[#806A56]/60 focus:outline-none focus:ring-2 focus:ring-[#493222]"
+                    className="w-full px-3.5 py-2.5 bg-white border border-[#D8C7B4] rounded-xl text-xs text-[#38271C] placeholder-[#806A56]/60 focus:outline-none focus:ring-2 focus:ring-[#462D1D]"
                   />
                 </div>
                 <div className="flex justify-end gap-2 pt-1">
@@ -793,7 +894,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
                   </button>
                   <button
                     type="submit"
-                    className="px-4 py-1.5 bg-[#493222] hover:bg-[#38271C] text-[#FFF9F1] text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                    className="px-4 py-1.5 bg-[#462D1D] hover:bg-[#341F12] text-[#FFF9F1] text-xs font-bold rounded-xl transition-colors cursor-pointer"
                   >
                     Send Link
                   </button>

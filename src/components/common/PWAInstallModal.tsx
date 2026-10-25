@@ -3,6 +3,7 @@ import { Download, X, Smartphone, CheckCircle2, Loader2, Share, MoreVertical } f
 import { usePWAInstall } from '../../hooks/usePWAInstall';
 
 import { AwkumEmblem } from './AwkumLogo';
+import { useBranding } from '../../context/BrandingContext';
 
 interface PWAInstallModalProps {
   isOpen: boolean;
@@ -11,6 +12,7 @@ interface PWAInstallModalProps {
 
 export const PWAInstallModal: React.FC<PWAInstallModalProps> = ({ isOpen, onClose }) => {
   const { isInstallable, isInstalled, isIOS, isAndroid, install } = usePWAInstall();
+  const { pwaIconUrl, logoUrl } = useBranding();
   const [isInstalling, setIsInstalling] = useState(false);
   const [installSuccess, setInstallSuccess] = useState(false);
 
@@ -42,8 +44,8 @@ export const PWAInstallModal: React.FC<PWAInstallModalProps> = ({ isOpen, onClos
         </button>
 
         <div className="flex flex-col items-center text-center">
-          <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-3.5">
-            <AwkumEmblem size={52} />
+          <div className="w-16 h-16 flex items-center justify-center mb-3.5 select-none">
+            <AwkumEmblem size={56} overrideLogoUrl={pwaIconUrl || logoUrl} />
           </div>
 
           <h3 className="font-serif text-lg font-bold text-[#38271C]">

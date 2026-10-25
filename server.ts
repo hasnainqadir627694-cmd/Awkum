@@ -79,8 +79,8 @@ const startupFavicon = path.resolve(__dirname, 'public', 'favicon.png');
 if (fs.existsSync(startupFavicon)) {
   serverBrandingCache = {
     logoUrl: '/favicon.png',
-    bottomImageUrl: '',
-    bottomImageEnabled: false,
+    bottomImageUrl: '/images/awkum-campus-building.jpg',
+    bottomImageEnabled: true,
     bottomImageScale: 100,
     bgImageUrl: '',
     bgImageEnabled: false,
@@ -1293,14 +1293,21 @@ async function startServer() {
   // =========================================================================
 
   app.get('/api/branding', async (_req, res) => {
-    if (serverBrandingCache) {
+    if (serverBrandingCache && serverBrandingCache.logoUrl) {
       return res.json(serverBrandingCache);
     }
     if (adminDb) {
       try {
         const snap = await adminDb.collection('config').doc('branding').get();
         if (snap.exists) {
-          serverBrandingCache = snap.data();
+          const snapData = snap.data() || {};
+          const publicFavicon = path.resolve(__dirname, 'public', 'favicon.png');
+          const fallbackLogo = fs.existsSync(publicFavicon) ? '/favicon.png' : '';
+          serverBrandingCache = {
+            ...snapData,
+            logoUrl: snapData.logoUrl || fallbackLogo,
+            pwaIconUrl: snapData.pwaIconUrl || snapData.logoUrl || fallbackLogo,
+          };
           return res.json(serverBrandingCache);
         }
       } catch (err: any) {
@@ -1311,8 +1318,9 @@ async function startServer() {
     const fallbackLogo = fs.existsSync(publicFavicon) ? '/favicon.png' : '';
     return res.json({
       logoUrl: fallbackLogo,
-      bottomImageUrl: '',
-      bottomImageEnabled: false,
+      pwaIconUrl: fallbackLogo,
+      bottomImageUrl: '/images/awkum-campus-building.jpg',
+      bottomImageEnabled: true,
       bottomImageScale: 100,
       bgImageUrl: '',
       bgImageEnabled: false,
@@ -1338,30 +1346,45 @@ async function startServer() {
    * Tier 4 Server-Side Disk & PWA Sync Endpoint:
    * Parses base64 buffer and overwrites all static icon files on disk (public/icon-192.png, public/icon-512.png, favicon.png, apple-touch-icon.png, og-image.png)
    */
+  /**
+   * Tier 4 Server-Side Disk & PWA Sync Endpoint:
+   * Supports both Website Logo and dedicated Mobile App / PWA Icon.
+   * Overwrites static icon files on disk (public/icon-192.png, public/icon-512.png, favicon.png, apple-touch-icon.png, og-image.png)
+   */
   app.post('/api/branding/logo', async (req, res) => {
     try {
       const logoDataUrl = req.body?.logoDataUrl || req.body?.logoData || req.body?.logoUrl || '';
-      if (!logoDataUrl) {
-        return res.status(400).json({ error: 'Missing logoDataUrl payload.' });
+      const pwaIconDataUrl = req.body?.pwaIconDataUrl || req.body?.pwaIconUrl || logoDataUrl;
+
+      if (!logoDataUrl && !pwaIconDataUrl) {
+        return res.status(400).json({ error: 'Missing logoDataUrl or pwaIconDataUrl payload.' });
       }
 
-      let buffer: Buffer | null = null;
-      if (logoDataUrl.includes(';base64,')) {
-        const parts = logoDataUrl.split(';base64,');
-        buffer = Buffer.from(parts[1], 'base64');
-      } else if (logoDataUrl.startsWith('http://') || logoDataUrl.startsWith('https://')) {
-        try {
-          const fetchRes = await fetch(logoDataUrl);
-          if (fetchRes.ok) {
-            const arrayBuffer = await fetchRes.arrayBuffer();
-            buffer = Buffer.from(arrayBuffer);
+      const decodeToBuffer = async (dataOrUrl: string): Promise<Buffer | null> => {
+        if (!dataOrUrl) return null;
+        if (dataOrUrl.includes(';base64,')) {
+          const parts = dataOrUrl.split(';base64,');
+          return Buffer.from(parts[1], 'base64');
+        } else if (dataOrUrl.startsWith('http://') || dataOrUrl.startsWith('https://')) {
+          try {
+            const fetchRes = await fetch(dataOrUrl);
+            if (fetchRes.ok) {
+              const arrayBuffer = await fetchRes.arrayBuffer();
+              return Buffer.from(arrayBuffer);
+            }
+          } catch (e) {
+            console.warn('[Server Branding Logo] Notice fetching remote logo:', e);
           }
-        } catch (e) {
-          console.warn('[Server Branding Logo] Notice fetching remote logo:', e);
         }
-      }
+        return null;
+      };
+
+      const logoBuffer = await decodeToBuffer(logoDataUrl);
+      const pwaBuffer = (await decodeToBuffer(pwaIconDataUrl)) || logoBuffer;
+      const effectiveWebBuffer = logoBuffer || pwaBuffer;
 
       const publicDir = path.resolve(__dirname, 'public');
+      const distDir = path.resolve(__dirname, 'dist');
       if (!fs.existsSync(publicDir)) {
         fs.mkdirSync(publicDir, { recursive: true });
       }
@@ -1369,56 +1392,81 @@ async function startServer() {
       lastLogoTimestamp = Date.now();
       const filesUpdated: string[] = [];
 
-      if (buffer) {
-        const staticIconNames = [
+      // 1. Write dedicated PWA / Mobile App Icons (unmodified, full-bleed, uncropped)
+      if (pwaBuffer) {
+        const pwaFileNames = [
           'icon-192.png',
           'icon-512.png',
-          'favicon.png',
-          'apple-touch-icon.png',
-          'og-image.png',
           'pwa-192x192.png',
           'pwa-512x512.png',
           'pwa-maskable-512x512.png',
+          'apple-touch-icon.png',
         ];
-
-        for (const filename of staticIconNames) {
+        for (const filename of pwaFileNames) {
           const targetPath = path.join(publicDir, filename);
-          fs.writeFileSync(targetPath, buffer);
+          fs.writeFileSync(targetPath, pwaBuffer);
           filesUpdated.push(filename);
 
-          const distDir = path.resolve(__dirname, 'dist');
           if (fs.existsSync(distDir)) {
             try {
-              fs.writeFileSync(path.join(distDir, filename), buffer);
+              fs.writeFileSync(path.join(distDir, filename), pwaBuffer);
+            } catch {}
+          }
+        }
+      }
+
+      // 2. Write Website & Web Tab Icons
+      if (effectiveWebBuffer) {
+        const webFileNames = ['favicon.png', 'og-image.png'];
+        for (const filename of webFileNames) {
+          const targetPath = path.join(publicDir, filename);
+          fs.writeFileSync(targetPath, effectiveWebBuffer);
+          filesUpdated.push(filename);
+
+          if (fs.existsSync(distDir)) {
+            try {
+              fs.writeFileSync(path.join(distDir, filename), effectiveWebBuffer);
             } catch {}
           }
         }
       }
 
       if (serverBrandingCache) {
-        serverBrandingCache.logoUrl = logoDataUrl;
+        if (logoDataUrl) serverBrandingCache.logoUrl = logoDataUrl;
+        if (pwaIconDataUrl) serverBrandingCache.pwaIconUrl = pwaIconDataUrl;
       } else {
-        serverBrandingCache = { logoUrl: logoDataUrl, version: lastLogoTimestamp };
+        serverBrandingCache = {
+          logoUrl: logoDataUrl || pwaIconDataUrl,
+          pwaIconUrl: pwaIconDataUrl || logoDataUrl,
+          version: lastLogoTimestamp,
+        };
       }
 
       if (adminDb) {
-        const payload = {
-          logoUrl: logoDataUrl,
-          logoDataUrl,
+        const payload: Record<string, any> = {
           publishedAt: admin.firestore.FieldValue.serverTimestamp(),
         };
+        if (logoDataUrl) {
+          payload.logoUrl = logoDataUrl;
+          payload.logoDataUrl = logoDataUrl;
+        }
+        if (pwaIconDataUrl) {
+          payload.pwaIconUrl = pwaIconDataUrl;
+          payload.pwaIconDataUrl = pwaIconDataUrl;
+        }
         adminDb.collection('config').doc('branding').set(payload, { merge: true }).catch(() => {});
         adminDb.collection('pages').doc('branding_settings').set(payload, { merge: true }).catch(() => {});
         adminDb.collection('branding').doc('settings').set(payload, { merge: true }).catch(() => {});
       }
 
-      console.log(`[Server Branding Logo] Tier 4 sync complete! Updated static PWA icons on disk. Timestamp v=${lastLogoTimestamp}`);
+      console.log(`[Server Branding Logo] Tier 4 sync complete! Updated static PWA and Web icons on disk. Timestamp v=${lastLogoTimestamp}`);
 
       return res.json({
         success: true,
         timestamp: lastLogoTimestamp,
         filesUpdated,
-        logoUrl: logoDataUrl,
+        logoUrl: logoDataUrl || pwaIconDataUrl,
+        pwaIconUrl: pwaIconDataUrl || logoDataUrl,
       });
     } catch (err: any) {
       console.error('[Server Branding Logo Error]:', err);
@@ -1428,6 +1476,7 @@ async function startServer() {
 
   /**
    * Dynamic Web App Manifest Endpoint for PWA Installation with timestamp cache-buster (?v=...)
+   * All icons set to purpose: "any" to prevent Android from cropping borders or zooming in
    */
   app.get('/manifest.json', (_req, res) => {
     res.setHeader('Content-Type', 'application/manifest+json');
@@ -1473,7 +1522,7 @@ async function startServer() {
           src: `/pwa-maskable-512x512.png?v=${lastLogoTimestamp}`,
           sizes: '512x512',
           type: 'image/png',
-          purpose: 'maskable'
+          purpose: 'any'
         },
         {
           src: `/apple-touch-icon.png?v=${lastLogoTimestamp}`,

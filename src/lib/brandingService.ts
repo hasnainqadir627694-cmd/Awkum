@@ -80,6 +80,7 @@ export async function optimizeImageToDataUrl(
 const CACHE_KEY = 'awkum_classhub_branding_cache';
 const ZEROX_LOGO_KEY = 'zerox_custom_website_logo';
 const APP_CUSTOM_LOGO_KEY = 'app_custom_website_logo';
+const PWA_ICON_STORAGE_KEY = 'awkum_custom_pwa_icon';
 
 /**
  * Synchronously retrieves published branding configuration from local storage.
@@ -88,12 +89,14 @@ const APP_CUSTOM_LOGO_KEY = 'app_custom_website_logo';
  */
 export function getCachedBranding(): BrandingConfig {
   let customLogo = '';
+  let customPwaIcon = '';
   if (typeof window !== 'undefined') {
     try {
       customLogo =
         localStorage.getItem(APP_CUSTOM_LOGO_KEY) ||
         localStorage.getItem(ZEROX_LOGO_KEY) ||
         '';
+      customPwaIcon = localStorage.getItem(PWA_ICON_STORAGE_KEY) || '';
       const raw = localStorage.getItem(CACHE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
@@ -102,6 +105,7 @@ export function getCachedBranding(): BrandingConfig {
             ...DEFAULT_BRANDING,
             ...parsed,
             logoUrl: customLogo || parsed.logoUrl || DEFAULT_BRANDING.logoUrl,
+            pwaIconUrl: customPwaIcon || parsed.pwaIconUrl || parsed.logoUrl || customLogo || DEFAULT_BRANDING.pwaIconUrl,
           };
         }
       }
@@ -110,6 +114,7 @@ export function getCachedBranding(): BrandingConfig {
   return {
     ...DEFAULT_BRANDING,
     logoUrl: customLogo || DEFAULT_BRANDING.logoUrl,
+    pwaIconUrl: customPwaIcon || DEFAULT_BRANDING.pwaIconUrl,
   };
 }
 
@@ -123,6 +128,9 @@ export function saveCachedBranding(config: BrandingConfig): void {
       if (config.logoUrl) {
         localStorage.setItem(ZEROX_LOGO_KEY, config.logoUrl);
         localStorage.setItem(APP_CUSTOM_LOGO_KEY, config.logoUrl);
+      }
+      if (config.pwaIconUrl) {
+        localStorage.setItem(PWA_ICON_STORAGE_KEY, config.pwaIconUrl);
       }
     } catch (e) {}
   }
@@ -335,6 +343,10 @@ export async function publishBranding(
 
   const updated: BrandingConfig = {
     logoUrl: newConfig.logoUrl !== undefined ? newConfig.logoUrl : current.logoUrl,
+    pwaIconUrl:
+      newConfig.pwaIconUrl !== undefined
+        ? newConfig.pwaIconUrl
+        : (current.pwaIconUrl || current.logoUrl),
     bottomImageUrl:
       newConfig.bottomImageUrl !== undefined
         ? newConfig.bottomImageUrl
@@ -364,6 +376,7 @@ export async function publishBranding(
     updatedBy: adminEmail,
     version: (current.version || 1) + 1,
     previousLogoUrl: current.logoUrl,
+    previousPwaIconUrl: current.pwaIconUrl || current.logoUrl,
     previousBottomImageUrl: current.bottomImageUrl,
     previousBottomImageEnabled: current.bottomImageEnabled,
     previousBottomImageScale: current.bottomImageScale,
@@ -380,6 +393,7 @@ export async function publishBranding(
       const payload = {
         ...updated,
         logoDataUrl: updated.logoUrl,
+        pwaIconDataUrl: updated.pwaIconUrl || updated.logoUrl,
         publishedAt: serverTimestamp(),
       };
       await Promise.allSettled([
@@ -399,11 +413,14 @@ export async function publishBranding(
     body: JSON.stringify(updated),
   }).catch(() => {});
 
-  if (updated.logoUrl) {
+  if (updated.logoUrl || updated.pwaIconUrl) {
     fetch('/api/branding/logo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ logoDataUrl: updated.logoUrl }),
+      body: JSON.stringify({
+        logoDataUrl: updated.logoUrl,
+        pwaIconDataUrl: updated.pwaIconUrl || updated.logoUrl,
+      }),
     }).catch(() => {});
   }
 
@@ -431,13 +448,14 @@ export async function publishBranding(
 export async function rollbackBranding(adminEmail: string): Promise<BrandingConfig> {
   const current = await getPublishedBranding();
 
-  if (!current.previousLogoUrl && !current.previousBottomImageUrl && !current.previousBgImageUrl) {
+  if (!current.previousLogoUrl && !current.previousPwaIconUrl && !current.previousBottomImageUrl && !current.previousBgImageUrl) {
     throw new Error('No previous branding version found to restore.');
   }
 
   return publishBranding(
     {
       logoUrl: current.previousLogoUrl || '',
+      pwaIconUrl: current.previousPwaIconUrl || current.previousLogoUrl || '',
       bottomImageUrl: current.previousBottomImageUrl || DEFAULT_BRANDING.bottomImageUrl,
       bgImageUrl: current.previousBgImageUrl || '',
       bgImageEnabled: current.previousBgImageEnabled !== undefined ? current.previousBgImageEnabled : false,

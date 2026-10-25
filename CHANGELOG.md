@@ -3,6 +3,22 @@
 All notable changes to the AWKUM ClassHub codebase are documented in this file.  
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.7.0] - 2026-10-24
+
+### Added
+- **Dedicated PWA Mobile App Branding Section in Master Admin (`BrandingAppearanceView.tsx`)**:
+  - Separated branding into two independent controls:
+    1. **Website & Portal Logo (ویب سائٹ و پورٹل لوگو)**: Governs web portal headers, login/register cards, side drawers, student/teacher/CR/admin layouts, and browser tab favicons.
+    2. **Mobile App / PWA Icon (موبائل ایپ و پی ڈبلیو اے ہوم اسکرین آئیکن)**: Governs installed mobile phone application launcher icons on Android and iOS, splash launch screens, and dynamic `/manifest.json`.
+  - Added dedicated preview widgets for both controls with 1:1 aspect ratio, `object-contain`, and transparent backgrounds with zero artificial borders, caging, or edge clipping.
+
+### Fixed
+- **Zero-Cropping PWA Launcher Icon Display**:
+  - Replaced `"purpose": "maskable"` with `"purpose": "any"` across all manifest icon definitions (`/manifest.json` on Express server and `public/manifest.json`). This permanently prevents Android Chrome and mobile OS adaptive icon engines from zooming in by 20-40% and clipping the outer edges/sides of custom logos.
+  - Provided direct raw image buffer writes to static launcher assets (`icon-192.png`, `icon-512.png`, `pwa-192x192.png`, `pwa-512x512.png`, `apple-touch-icon.png`) preserving original alpha channels and dimensions without forced canvas padding.
+
+---
+
 ## [2.6.0] - 2026-10-24
 
 ### Fixed

@@ -132,20 +132,28 @@ export class BrandService {
     if (typeof window === 'undefined') return;
 
     const logoUrl = config.logoUrl || '';
+    const pwaIconUrl = config.pwaIconUrl || logoUrl;
     const timestamp = Date.now();
     const logoWithBuster = logoUrl
       ? logoUrl.startsWith('data:')
         ? logoUrl
         : `${logoUrl}${logoUrl.includes('?') ? '&' : '?'}v=${timestamp}`
       : '';
+    const pwaWithBuster = pwaIconUrl
+      ? pwaIconUrl.startsWith('data:')
+        ? pwaIconUrl
+        : `${pwaIconUrl}${pwaIconUrl.includes('?') ? '&' : '?'}v=${timestamp}`
+      : logoWithBuster;
 
     // 2. Imperatively update Favicon, Apple Touch Icon, and Shortcut Icons
     if (logoWithBuster) {
       this.updateLinkTag("link[rel~='icon']", 'icon', logoWithBuster);
-      this.updateLinkTag("link[rel~='apple-touch-icon']", 'apple-touch-icon', logoWithBuster);
       this.updateLinkTag("link[rel='shortcut icon']", 'shortcut icon', logoWithBuster);
       this.updateMetaTag("meta[property='og:image']", 'og:image', logoWithBuster);
       this.updateMetaTag("meta[name='twitter:image']", 'twitter:image', logoWithBuster);
+    }
+    if (pwaWithBuster) {
+      this.updateLinkTag("link[rel~='apple-touch-icon']", 'apple-touch-icon', pwaWithBuster);
     }
 
     // 3. Update PWA status bar & theme color meta tags
@@ -155,8 +163,8 @@ export class BrandService {
 
     // 4. Update splash screen image if present in DOM
     const splashImg = document.querySelector<HTMLImageElement>('#pwa-splash-logo');
-    if (splashImg && logoUrl) {
-      splashImg.src = logoUrl;
+    if (splashImg && pwaIconUrl) {
+      splashImg.src = pwaIconUrl;
     }
 
     // 5. Dispatch global window custom events for cross-module synchronization
@@ -168,17 +176,20 @@ export class BrandService {
       );
       window.dispatchEvent(
         new CustomEvent('website_logo_updated', {
-          detail: { logoUrl },
+          detail: { logoUrl, pwaIconUrl },
         })
       );
     } catch (e) {}
 
     // 6. Notify server endpoint to rewrite static PWA icons on disk if base64 logo provided
-    if (logoUrl && logoUrl.startsWith('data:image/')) {
+    const payload: Record<string, string> = {};
+    if (logoUrl) payload.logoDataUrl = logoUrl;
+    if (pwaIconUrl) payload.pwaIconDataUrl = pwaIconUrl;
+    if (Object.keys(payload).length > 0) {
       fetch('/api/branding/logo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ logoDataUrl: logoUrl }),
+        body: JSON.stringify(payload),
       }).catch(() => {});
     }
 
