@@ -127,11 +127,11 @@ export const Header: React.FC<HeaderProps> = ({
               />
             ) : (
               <div className="w-8 h-8 rounded-full bg-[#493222] text-[#FFF9F1] flex items-center justify-center font-bold text-xs border border-amber-400/40 shrink-0">
-                {student.name.charAt(0)}
+                {(student.name && !student.name.includes('@') ? student.name : 'S').charAt(0).toUpperCase()}
               </div>
             )}
             <span className="hidden md:inline-block text-xs font-semibold text-[#38271C]">
-              {student.name.split(' ')[0]}
+              {(student.name && !student.name.includes('@') ? student.name : student.email ? student.email.split('@')[0] : 'Student').split(' ')[0]}
             </span>
           </button>
         </div>

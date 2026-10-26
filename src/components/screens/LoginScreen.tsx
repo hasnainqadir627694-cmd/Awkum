@@ -12,6 +12,13 @@ import {
   GraduationCap,
   Building,
   CheckCircle2,
+  KeyRound,
+  Sparkles,
+  RefreshCw,
+  Send,
+  Clock,
+  ShieldCheck,
+  BookOpen,
 } from 'lucide-react';
 import { AwkumEmblem } from '../common/AwkumLogo';
 import { EmailVerificationPendingScreen } from './EmailVerificationPendingScreen';
@@ -19,10 +26,17 @@ import { auth } from '../../lib/firebase';
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendEmailVerification,
+  updateProfile,
 } from 'firebase/auth';
 import { subscribeToBranding, getCachedBranding, saveCachedBranding, getPublishedBranding } from '../../lib/brandingService';
 import { resolveUserRole, registerStudentAccount } from '../../lib/authService';
 import { subscribeToClasses } from '../../lib/classService';
+import {
+  verifyTeacherInvitation,
+  reserveTeacherInvitation,
+  claimTeacherInvitation,
+} from '../../lib/teacherInvitationService';
 import { AdminUser, BrandingConfig, UserRole, ClassSection } from '../../data/adminData';
 
 interface LoginScreenProps {
@@ -30,7 +44,10 @@ interface LoginScreenProps {
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
-  // Mode: 'login' | 'register'
+  // Top Entry Mode: 'account' (Student/Admin/Teacher standard login) vs 'teacher_invitation' (Join as Subject Teacher)
+  const [portalEntryMode, setPortalEntryMode] = useState<'account' | 'teacher_invitation'>('account');
+
+  // Account mode: 'login' | 'register'
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [pendingVerificationEmail, setPendingVerificationEmail] = useState<string | null>(null);
 
@@ -49,6 +66,28 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const [department, setDepartment] = useState('Software Engineering');
   const [availableClasses, setAvailableClasses] = useState<ClassSection[]>([]);
   const [selectedClass, setSelectedClass] = useState<string>('');
+
+  // Teacher Invitation Claim State
+  const [inviteCode, setInviteCode] = useState('');
+  const [invitePassword, setInvitePassword] = useState('');
+  const [showInvitePassword, setShowInvitePassword] = useState(false);
+  const [teacherClaimStep, setTeacherClaimStep] = useState<'verify' | 'register' | 'verification_pending'>('verify');
+  const [verifiedSubject, setVerifiedSubject] = useState<{
+    id: string;
+    name: string;
+    code: string;
+    creditHours: number;
+    assignedClass?: string;
+    description?: string;
+  } | null>(null);
+
+  const [teacherFullName, setTeacherFullName] = useState('');
+  const [teacherEmail, setTeacherEmail] = useState('');
+  const [teacherPassword, setTeacherPassword] = useState('');
+  const [teacherConfirmPassword, setTeacherConfirmPassword] = useState('');
+  const [showTeacherPassword, setShowTeacherPassword] = useState(false);
+  const [teacherResendCooldown, setTeacherResendCooldown] = useState(60);
+  const [isCheckingTeacherVerification, setIsCheckingTeacherVerification] = useState(false);
 
   // Shared status state
   const [isLoading, setIsLoading] = useState(false);
@@ -89,24 +128,327 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     };
   }, []);
 
+  // Cooldown timer for teacher verification email
+  useEffect(() => {
+    let timer: any;
+    if (teacherClaimStep === 'verification_pending' && teacherResendCooldown > 0) {
+      timer = setTimeout(() => setTeacherResendCooldown((prev) => prev - 1), 1000);
+    }
+    return () => clearTimeout(timer);
+  }, [teacherClaimStep, teacherResendCooldown]);
+
+  // Handler: Step 1 - Verify invitation code & password
+  const handleVerifyInvitation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage('');
+    setSuccessMessage('');
+
+    const cleanCode = inviteCode.trim().toUpperCase();
+    const cleanPass = invitePassword.trim();
+
+    if (!cleanCode) {
+      setErrorMessage('Please enter the Subject Invitation Code.');
+      return;
+    }
+    if (!cleanPass) {
+      setErrorMessage('Please enter the Invitation Password.');
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      const res = await verifyTeacherInvitation({
+        invitationCode: cleanCode,
+        invitationPassword: cleanPass,
+      });
+
+      setIsLoading(false);
+
+      if (!res.success || !res.subject) {
+        setErrorMessage(res.error || 'Invalid subject invitation credentials. Please check details.');
+        return;
+      }
+
+      setVerifiedSubject(res.subject);
+      setTeacherClaimStep('register');
+      setSuccessMessage(`Invitation verified! You are registering as teacher for ${res.subject.name} (${res.subject.code}).`);
+    } catch (err: any) {
+      setIsLoading(false);
+      setErrorMessage(err?.message || 'Error verifying invitation credentials.');
+    }
+  };
+
+  // Handler: Step 2 - Register teacher account & send Firebase verification email
+  const handleTeacherRegistrationSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage('');
+    setSuccessMessage('');
+
+    if (!teacherFullName.trim()) {
+      setErrorMessage('Please enter your full name.');
+      return;
+    }
+    if (!teacherEmail.trim()) {
+      setErrorMessage('Please enter your university/official email.');
+      return;
+    }
+    if (!teacherPassword || teacherPassword.length < 6) {
+      setErrorMessage('Please choose a secure password (at least 6 characters).');
+      return;
+    }
+    if (teacherPassword !== teacherConfirmPassword) {
+      setErrorMessage('Passwords do not match. Please enter matching passwords.');
+      return;
+    }
+
+    setIsLoading(true);
+    const cleanEmail = teacherEmail.trim().toLowerCase();
+    const cleanName = teacherFullName.trim();
+
+    try {
+      let authUser = auth?.currentUser;
+
+      // 1. Create account or authenticate existing account
+      if (auth) {
+        try {
+          const cred = await createUserWithEmailAndPassword(auth, cleanEmail, teacherPassword);
+          authUser = cred.user;
+        } catch (authErr: any) {
+          if (authErr?.code === 'auth/email-already-in-use') {
+            // Account already exists in Firebase Auth -> Authenticate with existing password to verify ownership
+            try {
+              const cred = await signInWithEmailAndPassword(auth, cleanEmail, teacherPassword);
+              authUser = cred.user;
+            } catch (signInErr: any) {
+              setIsLoading(false);
+              setErrorMessage('An account with this email already exists. Please enter your existing account password to confirm ownership.');
+              return;
+            }
+          } else {
+            setIsLoading(false);
+            setErrorMessage(authErr?.message || 'Failed to create teacher account in Firebase Authentication.');
+            return;
+          }
+        }
+      }
+
+      if (!authUser) {
+        setIsLoading(false);
+        setErrorMessage('Firebase Authentication error. Please try again.');
+        return;
+      }
+
+      // Update Firebase Auth user profile displayName immediately
+      try {
+        await updateProfile(authUser, { displayName: cleanName });
+      } catch (e) {}
+
+      // 2. Check if email is already verified
+      if (authUser.emailVerified) {
+        // Claim immediately!
+        const claimRes = await claimTeacherInvitation({
+          invitationCode: inviteCode.trim().toUpperCase(),
+          invitationPassword: invitePassword.trim(),
+          teacherUid: authUser.uid,
+          teacherEmail: cleanEmail,
+          teacherName: cleanName,
+        });
+
+        if (!claimRes.success) {
+          setIsLoading(false);
+          setErrorMessage(claimRes.error || 'Failed to claim invitation.');
+          return;
+        }
+
+        setIsLoading(false);
+        setSuccessMessage(`Welcome, Professor ${cleanName}! Invitation successfully claimed.`);
+
+        // Log in directly to Teacher Workspace
+        const resolution = await resolveUserRole(cleanEmail, teacherPassword, authUser.uid);
+        const activeTeacherUser: AdminUser = resolution.user ? {
+          ...resolution.user,
+          name: cleanName,
+          role: 'teacher',
+          roles: ['teacher'],
+          teacherStatus: 'active',
+        } : {
+          id: authUser.uid,
+          uid: authUser.uid,
+          name: cleanName,
+          email: cleanEmail,
+          role: 'teacher',
+          roles: ['teacher'],
+          teacherStatus: 'active',
+          status: 'active',
+          assignedClass: verifiedSubject?.assignedClass || '',
+          assignedSubjects: verifiedSubject ? [verifiedSubject.name] : [],
+          registeredDate: new Date().toISOString(),
+          emailVerified: true,
+        };
+        onLoginSuccess(activeTeacherUser, 'teacher');
+        return;
+      }
+
+      // 3. Email is unverified -> Send verification email and reserve invitation
+      try {
+        await sendEmailVerification(authUser);
+      } catch (emailErr: any) {
+        console.warn('[Firebase Auth] Verification email notice:', emailErr);
+      }
+
+      await reserveTeacherInvitation({
+        invitationCode: inviteCode.trim().toUpperCase(),
+        invitationPassword: invitePassword.trim(),
+        teacherEmail: cleanEmail,
+        teacherUid: authUser.uid,
+        teacherName: cleanName,
+      });
+
+      setIsLoading(false);
+      setTeacherResendCooldown(60);
+      setTeacherClaimStep('verification_pending');
+    } catch (err: any) {
+      setIsLoading(false);
+      setErrorMessage(err?.message || 'Error completing teacher registration.');
+    }
+  };
+
+  // Handler: Step 3 - Check if email is verified and complete atomic claim
+  const handleCheckTeacherVerification = async () => {
+    setIsCheckingTeacherVerification(true);
+    setErrorMessage('');
+
+    try {
+      if (!auth?.currentUser) {
+        setIsCheckingTeacherVerification(false);
+        setErrorMessage('Authentication session expired. Please sign in again.');
+        return;
+      }
+
+      await auth.currentUser.reload();
+
+      if (!auth.currentUser.emailVerified) {
+        setIsCheckingTeacherVerification(false);
+        setErrorMessage('Verification not detected yet. Please open the email, click the verification link, and click this button again.');
+        return;
+      }
+
+      // Email is confirmed verified! Execute atomic claim
+      const cleanEmail = (auth.currentUser.email || teacherEmail).trim().toLowerCase();
+      const cleanName = teacherFullName.trim() || auth.currentUser.displayName || 'Faculty Member';
+
+      try {
+        await updateProfile(auth.currentUser, { displayName: cleanName });
+      } catch (e) {}
+
+      const claimRes = await claimTeacherInvitation({
+        invitationCode: inviteCode.trim().toUpperCase(),
+        invitationPassword: invitePassword.trim(),
+        teacherUid: auth.currentUser.uid,
+        teacherEmail: cleanEmail,
+        teacherName: cleanName,
+      });
+
+      setIsCheckingTeacherVerification(false);
+
+      if (!claimRes.success) {
+        setErrorMessage(claimRes.error || 'Failed to claim invitation.');
+        return;
+      }
+
+      setSuccessMessage(`Email verified! Welcome, Professor ${cleanName}. Opening your teacher workspace...`);
+
+      const resolution = await resolveUserRole(cleanEmail, teacherPassword, auth.currentUser.uid);
+      const teacherUser: AdminUser = resolution.user ? {
+        ...resolution.user,
+        name: cleanName,
+        role: 'teacher',
+        roles: ['teacher'],
+        teacherStatus: 'active',
+      } : {
+        id: auth.currentUser.uid,
+        uid: auth.currentUser.uid,
+        name: cleanName,
+        email: cleanEmail,
+        role: 'teacher',
+        roles: ['teacher'],
+        teacherStatus: 'active',
+        status: 'active',
+        assignedClass: verifiedSubject?.assignedClass || '',
+        assignedSubjects: verifiedSubject ? [verifiedSubject.name] : [],
+        registeredDate: new Date().toISOString(),
+        emailVerified: true,
+      };
+      setTimeout(() => {
+        onLoginSuccess(teacherUser, 'teacher');
+      }, 1000);
+    } catch (err: any) {
+      setIsCheckingTeacherVerification(false);
+      setErrorMessage(err?.message || 'Error checking verification status.');
+    }
+  };
+
+  // Handler: Resend verification email for teacher
+  const handleResendTeacherVerificationEmail = async () => {
+    if (teacherResendCooldown > 0) return;
+    setIsLoading(true);
+    try {
+      if (auth?.currentUser) {
+        await sendEmailVerification(auth.currentUser);
+        setTeacherResendCooldown(60);
+        setSuccessMessage(`New verification link dispatched to ${teacherEmail}. Please check your inbox.`);
+        setTimeout(() => setSuccessMessage(''), 4000);
+      }
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Unable to resend email at this time.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
 
     if (!studentId.trim()) {
-      setErrorMessage('Please enter your Student ID or university email.');
+      setErrorMessage('Please enter your Student ID, university email, or Subject Invitation Code.');
       return;
     }
 
     if (!password) {
-      setErrorMessage('Please enter your password.');
+      setErrorMessage('Please enter your password or invitation password.');
       return;
     }
 
     setIsLoading(true);
 
     const cleanIdentifier = studentId.trim();
+    const cleanPassword = password.trim();
+
+    // 0. Check if input is a teacher invitation code (e.g. contains hyphen or verifies successfully)
+    if (cleanIdentifier.includes('-') || cleanIdentifier.length >= 6) {
+      try {
+        const inviteRes = await verifyTeacherInvitation({
+          invitationCode: cleanIdentifier.toUpperCase(),
+          invitationPassword: cleanPassword,
+        });
+
+        if (inviteRes.success && inviteRes.subject) {
+          setIsLoading(false);
+          setInviteCode(cleanIdentifier.toUpperCase());
+          setInvitePassword(cleanPassword);
+          setVerifiedSubject(inviteRes.subject);
+          setTeacherClaimStep('register');
+          setSuccessMessage(`Invitation verified! Register as teacher for ${inviteRes.subject.name} (${inviteRes.subject.code}).`);
+          return;
+        }
+      } catch (e) {
+        // Not a teacher invitation, proceed to standard account login below
+      }
+    }
+
     const isMasterAdmin = cleanIdentifier.toLowerCase() === 'hasnainbuilds724656@gmail.com';
     let authVerifiedUid: string | undefined = undefined;
 
@@ -370,7 +712,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
         {/* Error and Success Alerts */}
         {errorMessage && (
-          <div className="w-full mt-4 p-3.5 bg-[#FDE8E4] border border-[#F5C2B8] rounded-2xl flex items-start gap-2.5 text-xs text-[#C84B31] shadow-2xs">
+          <div className="w-full mt-4 p-3.5 bg-[#FDE8E4] border border-[#F5C2B8] rounded-2xl flex items-start gap-2.5 text-xs text-[#C84B31] shadow-2xs animate-in fade-in">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
             <div className="flex-1">
               <span>{errorMessage}</span>
@@ -397,285 +739,514 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           </div>
         )}
 
-        {/* FORM (No outer square frame) */}
-        {authMode === 'login' ? (
-          <form onSubmit={handleLoginSubmit} className="w-full space-y-3.5 mt-5">
-            {/* Field 1: University Email */}
-            <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
-              {/* Left Warm Square Icon Container */}
-              <div className="w-12 h-12 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
-                <Mail className="w-5 h-5 stroke-[1.8]" />
-              </div>
-              {/* Text Label + Input */}
-              <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
-                <label htmlFor="login-email" className="block text-[12px] sm:text-[13px] font-semibold text-[#3D291D] leading-none mb-1 cursor-pointer">
-                  University Email
-                </label>
-                <input
-                  id="login-email"
-                  type="text"
-                  value={studentId}
-                  onChange={(e) => setStudentId(e.target.value)}
-                  placeholder="e.g. 23SW1234@awkum.edu.pk"
-                  className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal leading-normal"
-                  autoComplete="email"
-                />
-              </div>
-            </div>
-
-            {/* Field 2: Password */}
-            <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
-              {/* Left Warm Square Icon Container */}
-              <div className="w-12 h-12 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
-                <Lock className="w-5 h-5 stroke-[1.8]" />
-              </div>
-              {/* Text Label + Input */}
-              <div className="flex-1 flex flex-col justify-center min-w-0">
-                <label htmlFor="login-password" className="block text-[12px] sm:text-[13px] font-semibold text-[#3D291D] leading-none mb-1 cursor-pointer">
-                  Password
-                </label>
-                <input
-                  id="login-password"
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal leading-normal"
-                  autoComplete="current-password"
-                />
-              </div>
-              {/* Right Eye Toggle Button */}
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="p-2 text-[#8C7665] hover:text-[#3D291D] transition-colors cursor-pointer shrink-0"
-                aria-label={showPassword ? 'Hide password' : 'Show password'}
-              >
-                {showPassword ? <EyeOff className="w-5 h-5 stroke-[1.8]" /> : <Eye className="w-5 h-5 stroke-[1.8]" />}
-              </button>
-            </div>
-
-            {/* Row: Remember Me & Forgot Password */}
-            <div className="flex items-center justify-between pt-1 px-1">
-              {/* Custom Rounded Dark Checkbox */}
-              <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                <div
-                  onClick={() => setRememberMe(!rememberMe)}
-                  className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors cursor-pointer ${
-                    rememberMe ? 'bg-[#462D1D] text-white' : 'bg-white border border-[#D5C2AF]'
-                  }`}
-                >
-                  {rememberMe && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+        {/* Standard Login/Register vs Teacher Claim Flow */}
+        {teacherClaimStep === 'verify' ? (
+          authMode === 'login' ? (
+            <form onSubmit={handleLoginSubmit} className="w-full space-y-3.5 mt-5">
+              {/* Field 1: University Email */}
+              <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+                <div className="w-12 h-12 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                  <Mail className="w-5 h-5 stroke-[1.8]" />
                 </div>
-                <span className="text-[13px] font-medium text-[#2E1D13]">Remember me</span>
-              </label>
+                <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
+                  <label htmlFor="login-email" className="block text-[12px] sm:text-[13px] font-semibold text-[#3D291D] leading-none mb-1 cursor-pointer">
+                    University Email
+                  </label>
+                  <input
+                    id="login-email"
+                    type="text"
+                    value={studentId}
+                    onChange={(e) => setStudentId(e.target.value)}
+                    placeholder="e.g. 23SW1234@awkum.edu.pk"
+                    className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal leading-normal"
+                    autoComplete="email"
+                  />
+                </div>
+              </div>
 
-              {/* Forgot Password Link */}
-              <button
-                type="button"
-                onClick={() => setShowForgotModal(true)}
-                className="text-[13px] font-semibold text-[#2E1D13] hover:underline cursor-pointer"
-              >
-                Forgot Password?
-              </button>
-            </div>
-
-            {/* Primary Login Button (Dark Chocolate Capsule with Arrow) */}
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full py-3.5 sm:py-4 mt-2 rounded-full bg-[#462D1D] hover:bg-[#341F12] active:bg-[#28160B] text-white font-bold text-[16px] shadow-[0_8px_22px_rgba(70,45,29,0.32)] hover:shadow-[0_10px_26px_rgba(70,45,29,0.4)] flex items-center justify-center gap-2.5 transition-all cursor-pointer disabled:opacity-60"
-            >
-              {isLoading ? (
-                <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              ) : (
-                <>
-                  <span>Login</span>
-                  <ArrowRight className="w-5 h-5 stroke-[2.5]" />
-                </>
-              )}
-            </button>
-
-            {/* Bottom Register Prompt */}
-            <div className="pt-3 text-center">
-              <p className="text-[13px] text-[#695444]">
-                New student and don&apos;t have an account?
-              </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthMode('register');
-                  setErrorMessage('');
-                  setSuccessMessage('');
-                }}
-                className="mt-1 font-bold text-[14px] text-[#2E1D13] hover:underline inline-flex items-center gap-1 cursor-pointer"
-              >
-                <span>Register here</span>
-                <ArrowRight className="w-4 h-4 inline stroke-[2.2]" />
-              </button>
-            </div>
-          </form>
-        ) : (
-          /* REGISTRATION FORM (No outer square frame) */
-          <form onSubmit={handleRegisterSubmit} className="w-full space-y-3 mt-5">
-            {/* Automated 1st Semester Banner */}
-            <div className="p-3 bg-[#EAF2E9] border border-[#C5DEC3] rounded-2xl flex items-center gap-2.5 text-xs text-[#3D5C3B]">
-              <GraduationCap className="w-4 h-4 text-[#557353] shrink-0" />
-              <div>
-                <span className="font-bold block">Automated Enrollment: 1st Semester</span>
-                <span className="text-[11px] text-[#557353]">
-                  New registrations are enrolled in BS Software Engineering (Fall 2026).
-                </span>
-              </div>
-            </div>
-
-            {/* Full Name */}
-            <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
-              <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
-                <User className="w-4 h-4 stroke-[1.8]" />
-              </div>
-              <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
-                <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
-                  Full Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  placeholder="e.g. Muhammad Ahmad"
-                  className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
-                />
-              </div>
-            </div>
-
-            {/* Father Name */}
-            <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
-              <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
-                <User className="w-4 h-4 stroke-[1.8]" />
-              </div>
-              <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
-                <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
-                  Father&apos;s Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={fatherName}
-                  onChange={(e) => setFatherName(e.target.value)}
-                  placeholder="e.g. Tariq Khan"
-                  className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
-                />
-              </div>
-            </div>
-
-            {/* University Email */}
-            <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
-              <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
-                <Mail className="w-4 h-4 stroke-[1.8]" />
-              </div>
-              <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
-                <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
-                  Email Address
-                </label>
-                <input
-                  type="email"
-                  required
-                  value={regEmail}
-                  onChange={(e) => setRegEmail(e.target.value)}
-                  placeholder="student@awkum.edu.pk"
-                  className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
-                />
-              </div>
-            </div>
-
-            {/* Department & Section */}
-            <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
-              <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
-                <Building className="w-4 h-4 stroke-[1.8]" />
-              </div>
-              <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
-                <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
-                  Enrolled Section
-                </label>
-                <select
-                  value={selectedClass}
-                  onChange={(e) => setSelectedClass(e.target.value)}
-                  className="w-full text-[13px] text-[#24150E] bg-transparent outline-none font-medium cursor-pointer"
+              {/* Field 2: Password */}
+              <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+                <div className="w-12 h-12 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                  <Lock className="w-5 h-5 stroke-[1.8]" />
+                </div>
+                <div className="flex-1 flex flex-col justify-center min-w-0">
+                  <label htmlFor="login-password" className="block text-[12px] sm:text-[13px] font-semibold text-[#3D291D] leading-none mb-1 cursor-pointer">
+                    Password
+                  </label>
+                  <input
+                    id="login-password"
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal leading-normal"
+                    autoComplete="current-password"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="p-2 text-[#8C7665] hover:text-[#3D291D] transition-colors cursor-pointer shrink-0"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
                 >
-                  {availableClasses.map((c) => (
-                    <option key={c.id} value={`${c.class} ${c.section}`}>
-                      {c.class} — Section {c.section}
-                    </option>
-                  ))}
-                  {availableClasses.length === 0 && (
-                    <option value="BS Software Engineering 1st A">
-                      BS Software Engineering 1st — Section A
-                    </option>
-                  )}
-                </select>
+                  {showPassword ? <EyeOff className="w-5 h-5 stroke-[1.8]" /> : <Eye className="w-5 h-5 stroke-[1.8]" />}
+                </button>
               </div>
-            </div>
 
-            {/* Password */}
-            <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
-              <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
-                <Lock className="w-4 h-4 stroke-[1.8]" />
-              </div>
-              <div className="flex-1 flex flex-col justify-center min-w-0">
-                <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
-                  Password
+              {/* Row: Remember Me & Forgot Password */}
+              <div className="flex items-center justify-between pt-1 px-1">
+                <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <div
+                    onClick={() => setRememberMe(!rememberMe)}
+                    className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors cursor-pointer ${
+                      rememberMe ? 'bg-[#462D1D] text-white' : 'bg-white border border-[#D5C2AF]'
+                    }`}
+                  >
+                    {rememberMe && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                  </div>
+                  <span className="text-[13px] font-medium text-[#2E1D13]">Remember me</span>
                 </label>
-                <input
-                  type={showRegPassword ? 'text' : 'password'}
-                  required
-                  value={regPassword}
-                  onChange={(e) => setRegPassword(e.target.value)}
-                  placeholder="Min 6 characters"
-                  className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
-                />
+
+                <button
+                  type="button"
+                  onClick={() => setShowForgotModal(true)}
+                  className="text-[13px] font-semibold text-[#2E1D13] hover:underline cursor-pointer"
+                >
+                  Forgot Password?
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowRegPassword(!showRegPassword)}
-                className="p-1.5 text-[#8C7665] hover:text-[#3D291D] transition-colors cursor-pointer shrink-0"
-              >
-                {showRegPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            </div>
 
-            {/* Submit Register Button */}
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full py-3.5 sm:py-4 mt-2 rounded-full bg-[#462D1D] hover:bg-[#341F12] text-white font-bold text-[15px] shadow-[0_8px_22px_rgba(70,45,29,0.32)] flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-60"
-            >
-              {isLoading ? (
-                <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              ) : (
-                <>
-                  <span>Complete Registration & Open Portal</span>
-                  <ArrowRight className="w-4 h-4 stroke-[2.2]" />
-                </>
-              )}
-            </button>
-
-            {/* Switch back to Login */}
-            <div className="pt-2 text-center text-xs text-[#806A56]">
-              <span>Already registered? </span>
+              {/* Primary Login Button */}
               <button
-                type="button"
-                onClick={() => {
-                  setAuthMode('login');
-                  setErrorMessage('');
-                  setSuccessMessage('');
-                }}
-                className="font-bold text-[#462D1D] hover:underline cursor-pointer"
+                type="submit"
+                disabled={isLoading}
+                className="w-full py-3.5 sm:py-4 mt-2 rounded-full bg-[#462D1D] hover:bg-[#341F12] active:bg-[#28160B] text-white font-bold text-[16px] shadow-[0_8px_22px_rgba(70,45,29,0.32)] hover:shadow-[0_10px_26px_rgba(70,45,29,0.4)] flex items-center justify-center gap-2.5 transition-all cursor-pointer disabled:opacity-60"
               >
-                Sign in here →
+                {isLoading ? (
+                  <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <>
+                    <span>Login</span>
+                    <ArrowRight className="w-5 h-5 stroke-[2.5]" />
+                  </>
+                )}
               </button>
-            </div>
-          </form>
+
+              {/* Bottom Register Prompt */}
+              <div className="pt-3 text-center">
+                <p className="text-[13px] text-[#695444]">
+                  New student and don&apos;t have an account?
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('register');
+                    setErrorMessage('');
+                    setSuccessMessage('');
+                  }}
+                  className="mt-1 font-bold text-[14px] text-[#2E1D13] hover:underline inline-flex items-center gap-1 cursor-pointer"
+                >
+                  <span>Register here</span>
+                  <ArrowRight className="w-4 h-4 inline stroke-[2.2]" />
+                </button>
+              </div>
+            </form>
+          ) : (
+            /* Student Registration Form */
+            <form onSubmit={handleRegisterSubmit} className="w-full space-y-3 mt-5">
+              <div className="p-3 bg-[#EAF2E9] border border-[#C5DEC3] rounded-2xl flex items-center gap-2.5 text-xs text-[#3D5C3B]">
+                <GraduationCap className="w-4 h-4 text-[#557353] shrink-0" />
+                <div>
+                  <span className="font-bold block">Automated Enrollment: 1st Semester</span>
+                  <span className="text-[11px] text-[#557353]">
+                    New registrations are enrolled in BS Software Engineering (Fall 2026).
+                  </span>
+                </div>
+              </div>
+
+              {/* Full Name */}
+              <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+                <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                  <User className="w-4 h-4 stroke-[1.8]" />
+                </div>
+                <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
+                  <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
+                    Full Name
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    placeholder="e.g. Muhammad Ahmad"
+                    className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
+                  />
+                </div>
+              </div>
+
+              {/* Father Name */}
+              <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+                <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                  <User className="w-4 h-4 stroke-[1.8]" />
+                </div>
+                <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
+                  <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
+                    Father&apos;s Name
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={fatherName}
+                    onChange={(e) => setFatherName(e.target.value)}
+                    placeholder="e.g. Tariq Khan"
+                    className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
+                  />
+                </div>
+              </div>
+
+              {/* Email */}
+              <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+                <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                  <Mail className="w-4 h-4 stroke-[1.8]" />
+                </div>
+                <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
+                  <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
+                    Email Address
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={regEmail}
+                    onChange={(e) => setRegEmail(e.target.value)}
+                    placeholder="student@awkum.edu.pk"
+                    className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
+                  />
+                </div>
+              </div>
+
+              {/* Enrolled Section */}
+              <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+                <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                  <Building className="w-4 h-4 stroke-[1.8]" />
+                </div>
+                <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
+                  <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
+                    Enrolled Section
+                  </label>
+                  <select
+                    value={selectedClass}
+                    onChange={(e) => setSelectedClass(e.target.value)}
+                    className="w-full text-[13px] text-[#24150E] bg-transparent outline-none font-medium cursor-pointer"
+                  >
+                    {availableClasses.map((c) => (
+                      <option key={c.id} value={`${c.class} ${c.section}`}>
+                        {c.class} — Section {c.section}
+                      </option>
+                    ))}
+                    {availableClasses.length === 0 && (
+                      <option value="BS Software Engineering 1st A">
+                        BS Software Engineering 1st — Section A
+                      </option>
+                    )}
+                  </select>
+                </div>
+              </div>
+
+              {/* Password */}
+              <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+                <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                  <Lock className="w-4 h-4 stroke-[1.8]" />
+                </div>
+                <div className="flex-1 flex flex-col justify-center min-w-0">
+                  <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
+                    Password
+                  </label>
+                  <input
+                    type={showRegPassword ? 'text' : 'password'}
+                    required
+                    value={regPassword}
+                    onChange={(e) => setRegPassword(e.target.value)}
+                    placeholder="Min 6 characters"
+                    className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowRegPassword(!showRegPassword)}
+                  className="p-1.5 text-[#8C7665] hover:text-[#3D291D] transition-colors cursor-pointer shrink-0"
+                >
+                  {showRegPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+
+              {/* Submit Register Button */}
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full py-3.5 sm:py-4 mt-2 rounded-full bg-[#462D1D] hover:bg-[#341F12] text-white font-bold text-[15px] shadow-[0_8px_22px_rgba(70,45,29,0.32)] flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-60"
+              >
+                {isLoading ? (
+                  <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <>
+                    <span>Complete Registration & Open Portal</span>
+                    <ArrowRight className="w-4 h-4 stroke-[2.2]" />
+                  </>
+                )}
+              </button>
+
+              {/* Switch back to Login */}
+              <div className="pt-2 text-center text-xs text-[#806A56]">
+                <span>Already registered? </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('login');
+                    setErrorMessage('');
+                    setSuccessMessage('');
+                  }}
+                  className="font-bold text-[#462D1D] hover:underline cursor-pointer"
+                >
+                  Sign in here →
+                </button>
+              </div>
+            </form>
+          )
+        ) : (
+          /* ----------------------------------------------------------------- */
+          /* MODE B: JOIN AS SUBJECT TEACHER (INVITATION CREDENTIAL WORKFLOW)   */
+          /* ----------------------------------------------------------------- */
+          <div className="w-full space-y-4 mt-5">
+
+            {/* Step 2: Subject Confirmed & Teacher Account Registration */}
+            {teacherClaimStep === 'register' && verifiedSubject && (
+              <form onSubmit={handleTeacherRegistrationSubmit} className="w-full space-y-3.5 animate-in fade-in">
+                {/* Verified Subject Information Card */}
+                <div className="p-3.5 bg-white border border-[#E7D9CB] rounded-2xl space-y-2 shadow-2xs">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 bg-[#462D1D] text-white font-mono text-[10px] font-bold rounded">
+                      {verifiedSubject.code}
+                    </span>
+                    <span className="text-[11px] font-bold text-[#668064] bg-[#EAF2E9] px-2 py-0.5 rounded-full">
+                      Subject Verified
+                    </span>
+                  </div>
+                  <h3 className="font-bold text-base text-[#38271C] leading-tight">
+                    {verifiedSubject.name}
+                  </h3>
+                  <div className="flex items-center gap-2 text-xs text-[#806A56]">
+                    <span>{verifiedSubject.creditHours} Credit Hours</span>
+                    {verifiedSubject.assignedClass && (
+                      <>
+                        <span>•</span>
+                        <span className="font-bold text-[#462D1D]">{verifiedSubject.assignedClass}</span>
+                      </>
+                    )}
+                  </div>
+
+                  <div className="p-2 bg-[#EAF2E9] border border-[#C5DEC3] rounded-xl text-[11px] text-[#3D5C3B] font-semibold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-[#557353] shrink-0" />
+                    <span>You are registering as the authorized teacher for this course.</span>
+                  </div>
+                </div>
+
+                {/* Teacher Full Name */}
+                <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+                  <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                    <User className="w-4 h-4 stroke-[1.8]" />
+                  </div>
+                  <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
+                    <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
+                      Faculty / Teacher Full Name
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={teacherFullName}
+                      onChange={(e) => setTeacherFullName(e.target.value)}
+                      placeholder="e.g. Dr. Muhammad Asim"
+                      className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
+                    />
+                  </div>
+                </div>
+
+                {/* Teacher Email */}
+                <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+                  <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                    <Mail className="w-4 h-4 stroke-[1.8]" />
+                  </div>
+                  <div className="flex-1 flex flex-col justify-center min-w-0 pr-2">
+                    <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
+                      Faculty / Personal Email
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={teacherEmail}
+                      onChange={(e) => setTeacherEmail(e.target.value)}
+                      placeholder="teacher@awkum.edu.pk"
+                      className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
+                    />
+                  </div>
+                </div>
+
+                {/* Teacher Password */}
+                <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+                  <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                    <Lock className="w-4 h-4 stroke-[1.8]" />
+                  </div>
+                  <div className="flex-1 flex flex-col justify-center min-w-0">
+                    <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
+                      New Account Password
+                    </label>
+                    <input
+                      type={showTeacherPassword ? 'text' : 'password'}
+                      required
+                      value={teacherPassword}
+                      onChange={(e) => setTeacherPassword(e.target.value)}
+                      placeholder="Min 6 characters"
+                      className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowTeacherPassword(!showTeacherPassword)}
+                    className="p-1.5 text-[#8C7665] hover:text-[#3D291D] transition-colors cursor-pointer shrink-0"
+                  >
+                    {showTeacherPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+
+                {/* Confirm Teacher Password */}
+                <div className="w-full rounded-2xl bg-white border border-[#E7D9CB] p-2.5 flex items-center gap-3.5 shadow-2xs focus-within:border-[#462D1D] focus-within:ring-2 focus-within:ring-[#462D1D]/15 transition-all">
+                  <div className="w-10 h-10 rounded-xl bg-[#F6EDE4] flex items-center justify-center shrink-0 text-[#543925]">
+                    <Lock className="w-4 h-4 stroke-[1.8]" />
+                  </div>
+                  <div className="flex-1 flex flex-col justify-center min-w-0">
+                    <label className="block text-[11px] font-semibold text-[#3D291D] leading-none mb-1">
+                      Confirm Password
+                    </label>
+                    <input
+                      type={showTeacherPassword ? 'text' : 'password'}
+                      required
+                      value={teacherConfirmPassword}
+                      onChange={(e) => setTeacherConfirmPassword(e.target.value)}
+                      placeholder="Re-enter password"
+                      className="w-full text-[13px] text-[#24150E] placeholder-[#9E8B7B] bg-transparent outline-none font-normal"
+                    />
+                  </div>
+                </div>
+
+                {/* Complete Registration Button */}
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full py-3.5 sm:py-4 mt-2 rounded-full bg-[#462D1D] hover:bg-[#341F12] text-white font-bold text-[15px] shadow-[0_8px_22px_rgba(70,45,29,0.32)] flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-60"
+                >
+                  {isLoading ? (
+                    <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <>
+                      <span>Complete Registration & Verify Email</span>
+                      <ArrowRight className="w-4 h-4 stroke-[2.2]" />
+                    </>
+                  )}
+                </button>
+
+                <div className="text-center pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTeacherClaimStep('verify');
+                      setErrorMessage('');
+                    }}
+                    className="text-xs font-semibold text-[#806A56] hover:text-[#462D1D] hover:underline cursor-pointer"
+                  >
+                    ← Enter different invitation credentials
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Step 3: Teacher Email Verification Pending */}
+            {teacherClaimStep === 'verification_pending' && (
+              <div className="w-full space-y-4 bg-white border border-[#E7D9CB] p-6 rounded-3xl text-center shadow-xs animate-in zoom-in-95">
+                <div className="w-16 h-16 rounded-3xl bg-[#EAF2E9] border border-[#C5DEC3] text-[#668064] flex items-center justify-center mx-auto shadow-inner">
+                  <Mail className="w-8 h-8 animate-bounce" />
+                </div>
+
+                <div className="space-y-1">
+                  <h3 className="font-bold text-base text-[#38271C]">
+                    Verify Your Faculty Email Address
+                  </h3>
+                  <p className="text-xs text-[#806A56] leading-relaxed max-w-sm mx-auto">
+                    A Firebase email verification link has been sent to:
+                  </p>
+                  <p className="font-mono text-xs font-bold text-[#462D1D] bg-[#F8F0E5] px-3 py-1.5 rounded-xl inline-block mt-1">
+                    {teacherEmail}
+                  </p>
+                </div>
+
+                <p className="text-[11px] text-[#806A56] leading-relaxed">
+                  The invitation is currently reserved for you. Please check your inbox (and Spam folder), click the verification link, and then click below to activate your teacher portal.
+                </p>
+
+                <div className="space-y-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={handleCheckTeacherVerification}
+                    disabled={isCheckingTeacherVerification}
+                    className="w-full py-3.5 px-4 bg-[#462D1D] hover:bg-[#341F12] text-white text-xs font-bold rounded-2xl flex items-center justify-center gap-2 transition-all cursor-pointer shadow-md disabled:opacity-60"
+                  >
+                    {isCheckingTeacherVerification ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Checking Verification...</span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>I Have Verified My Email</span>
+                        <ArrowRight className="w-4 h-4" />
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleResendTeacherVerificationEmail}
+                    disabled={isLoading || teacherResendCooldown > 0}
+                    className="w-full py-2.5 px-4 bg-[#F8F0E5] hover:bg-[#EFE3D3] text-xs font-semibold text-[#806A56] hover:text-[#38271C] rounded-2xl border border-[#E6D8C7] transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    {teacherResendCooldown > 0 ? (
+                      <span className="flex items-center justify-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5" />
+                        <span>Resend link in {teacherResendCooldown}s</span>
+                      </span>
+                    ) : (
+                      <span className="flex items-center justify-center gap-1.5">
+                        <Send className="w-3.5 h-3.5" />
+                        <span>Resend Verification Email</span>
+                      </span>
+                    )}
+                  </button>
+                </div>
+
+                <div className="pt-2 text-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTeacherClaimStep('verify');
+                      setErrorMessage('');
+                    }}
+                    className="text-xs font-semibold text-[#806A56] hover:text-[#462D1D] hover:underline cursor-pointer"
+                  >
+                    ← Start Over / Enter Different Code
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         )}
 
       </div>

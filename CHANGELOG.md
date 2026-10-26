@@ -3,6 +3,44 @@
 All notable changes to the AWKUM ClassHub codebase are documented in this file.  
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.9.0] - 2026-10-25
+
+### Added
+- **Cryptographic Subject Teacher Invitation Credentials System**:
+  - Replaced the retired Gmail-based teacher search & assignment dropdown with an automated subject-specific invitation credential workflow.
+  - Automatically generates a unique, human-readable Subject Invitation Code (e.g., `CS101-7M9K2X`) and a 12-character high-entropy invitation password whenever Master Admin creates an unassigned subject.
+  - Plaintext passwords are never stored in persistent storage: only SHA-256 cryptographic hex hashes are saved in the `subjectInvitations` collection.
+  - Single-use and concurrency protection: invitations transition through `active` -> `reserved` -> `claimed` / `revoked`, permanently preventing duplicate claims or race conditions.
+  - **Universal Login Integration**: Added a prominent mode toggle (`Existing Account Login | Join as Subject Teacher`) directly on the universal login screen (`LoginScreen.tsx`). No separate login page or detached portal URL was created.
+  - **3-Step Invitation Claim & Faculty Onboarding Flow**:
+    1. Credentials verification with live subject details confirmation from Firestore.
+    2. Faculty registration with Firebase Authentication account creation / existing account linking.
+    3. Mandatory Firebase email verification before atomic claim completion and Teacher Workspace routing.
+  - **Master Admin Dashboard Controls**:
+    - `SubjectsManagementView.tsx`: Automatic invitation modal popup upon subject creation with 1-click copy buttons; dynamic "Awaiting Teacher" status badge with invitation code in the curriculum list.
+    - `TeacherAssignmentsView.tsx`: Real-time credentials inspection and regeneration for unassigned courses; verified teacher email, name, and assignment date display for active courses; explicit "Revoke Teacher Access" modal preserving all course documents and student submissions.
+  - **Backend Endpoints (`server.ts`)**:
+    - `POST /api/teacher-invitations/generate`: Cryptographic code & password generation with SHA-256 hashing.
+    - `GET /api/teacher-invitations/by-subject`: Secure status retrieval.
+    - `POST /api/teacher-invitations/verify`: Verification against stored SHA-256 hash.
+    - `POST /api/teacher-invitations/reserve`: Email verification reservation.
+    - `POST /api/teacher-invitations/claim`: Atomic assignment and role profile upgrade.
+    - `POST /api/teacher-invitations/revoke`: Administrative revocation.
+
+---
+
+## [2.8.0] - 2026-10-25
+
+### Fixed
+- **Permanent CR Role Retention & Zero Auto-Revocation Enforcement**:
+  - Removed all automatic revocation cascades when appointing new Class Representatives (`src/lib/authService.ts` and `server.ts`). An appointed CR remains active until the Master Administrator explicitly and manually invokes the Revocation workflow.
+  - Resolved the Firestore ghost-revocation bug in real-time listeners: query snapshots in `unsubCRQuery` now only promote active CR assignments and never downgrade an account due to historical `status: 'revoked'` records.
+  - Implemented timestamp precedence checking (`crAssignedAt >= crRevokedAt`) across `normalizeUserRecord`, `validateCRAssignmentOnServer`, and `/api/auth/validate-cr`, ensuring re-appointed CRs are never rejected by stale revocation flags.
+  - Enforced canonical deterministic document IDs (`cr_${cleanEmail}`) in `server.ts` and pruned obsolete timestamped historical revocation records on assignment creation.
+  - Updated `CRAssignmentsView.tsx` to display all active CRs per class section with individual health/acknowledgment badges and dedicated per-user manual revocation controls.
+
+---
+
 ## [2.7.0] - 2026-10-24
 
 ### Added

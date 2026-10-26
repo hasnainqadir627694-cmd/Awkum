@@ -8,7 +8,6 @@ import {
   BellRing,
   ArrowLeft,
   GraduationCap,
-  Sparkles,
 } from 'lucide-react';
 import { AdminUser } from '../../data/adminData';
 import { ScheduleItem } from '../../data/portalData';

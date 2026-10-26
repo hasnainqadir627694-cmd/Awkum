@@ -11,7 +11,7 @@ import {
   AlertCircle,
   FileSpreadsheet,
   ChevronRight,
-  Sparkles,
+  Calendar,
 } from 'lucide-react';
 import { AttendanceSession } from '../../lib/attendanceService';
 import { ScheduleItem } from '../../data/portalData';
@@ -163,16 +163,16 @@ export const CRDashboardView: React.FC<CRDashboardViewProps> = ({
             <span className="text-[10px] text-[#806A56] mt-0.5 block truncate">Daily session</span>
           </button>
 
-          {/* Action 2: Schedule Planner */}
+          {/* Action 2: Weekly Schedule */}
           <button
             onClick={() => onNavigateTab('schedule')}
             className="p-3.5 bg-[#FFF9F1] hover:bg-white border border-[#E6D8C7] rounded-2xl shadow-2xs text-left transition-all group cursor-pointer active:scale-98"
           >
             <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-900 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
-              <Sparkles className="w-4 h-4 text-amber-700" />
+              <Calendar className="w-4 h-4 text-amber-800" />
             </div>
-            <span className="font-bold text-xs text-[#38271C] block truncate">AI Schedule</span>
-            <span className="text-[10px] text-[#806A56] mt-0.5 block truncate">Upload & publish</span>
+            <span className="font-bold text-xs text-[#38271C] block truncate">Weekly Schedule</span>
+            <span className="text-[10px] text-[#806A56] mt-0.5 block truncate">Manage timetable</span>
           </button>
 
           {/* Action 3: Class Students */}

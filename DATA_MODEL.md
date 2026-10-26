@@ -25,6 +25,7 @@ AWKUM ClassHub persists data in **Google Cloud Firestore** (NoSQL document datab
 | `subjects` | Custom Subject Code / ID (e.g. `CS-101`) | Dynamically configured curriculum subjects & teacher assignments | **Implemented** | Authenticated Users / Public | Master Admin Only |
 | `crAssignments` | `cr_{email_slug}_{timestamp}` | Active & historical CR authorizations bound to UID and Gmail | **Implemented** | Master Admin; Assigned CR | Master Admin Only |
 | `subjectTeacherAssignments` | `sta_{subjectId}_{teacherUid}_{timestamp}` | Subject-specific teacher assignments bound to verified UID and subjectId | **Implemented** | Authenticated Users | Master Admin Only |
+| `subjectInvitations` | `sinv_{subjectId}_{timestamp}` | Secure, single-use subject invitation credentials (SHA-256 hashed password) | **Implemented** | Master Admin | Master Admin / Server Admin |
 | `attendanceSessions` | `{classId}_{YYYY-MM-DD}` | Single daily whole-class attendance record per section | **Implemented** | Authenticated Students & CRs | Authorized CR & Master Admin |
 | `auditLogs` | Auto-generated UID | Administrative, security, and role change audit logs | **Implemented** | Master Admin Only | Authenticated Applet (append-only) |
 | `branding` | `current` | University logos, bottom graphics, and visual scales | **Implemented** | Public (read-only) | Master Admin Only |
@@ -32,7 +33,10 @@ AWKUM ClassHub persists data in **Google Cloud Firestore** (NoSQL document datab
 | `assignments` | Auto-generated UID | Course homework & assignments scoped to subjectId & targetClass | **Implemented** | Authenticated Students & Faculty | Authorized Faculty & Admin |
 | `submissions` | Auto-generated UID | Student coursework submissions with Cloudinary attachments | **Implemented** | Student owner & Faculty | Student owner |
 | `announcements` | Auto-generated UID | Departmental notices and urgent university broadcasts | **Implemented** | Authenticated Users | Master Admin |
-| `schedules` | Auto-generated UID | Timetable class slots mapped to sections and rooms | **Implemented** | Authenticated Students | Master Admin |
+| `schedules` | `schedule_{classId}` | Published recurring weekly schedule with validity range & class entries | **Implemented** | Authenticated Users | Authorized CR & Master Admin |
+| `scheduleDrafts` | `draft_{classId}` | Working timetable draft edited by Class Representative before publishing | **Implemented** | Authorized CR & Master Admin | Authorized CR & Master Admin |
+| `scheduleOverrides` | `{classId}_{YYYY-MM-DD}_{entryId}` | Date-specific class cancellations or reschedules (exceptions) | **Implemented** | Authenticated Users | Authorized CR & Master Admin |
+| `scheduleHistory` | `{classId}_v{version}` | Immutable archived versions of published recurring schedules | **Implemented** | Authorized CR & Master Admin | Authorized CR & Master Admin |
 
 ---
 
@@ -233,7 +237,38 @@ interface SubjectDocument {
   description?: string;            // Course description / syllabus notes
   status: 'active' | 'inactive';   // Course operational status
   isActive: boolean;              // Active visibility flag
+  invitationId?: string;          // Currently active invitation ID
+  invitationCode?: string;        // Active invitation code (e.g. CS101-X7K9Q2)
+  invitationStatus?: 'active' | 'reserved' | 'claimed' | 'revoked' | 'expired';
   createdAt?: FirebaseFirestore.FieldValue; // Creation timestamp
+}
+```
+
+---
+
+### 3.9 `subjectInvitations` Collection
+**Path**: `/subjectInvitations/{invitationId}`  
+**Purpose**: Stores secure, single-use credentials for faculty teacher assignment. Passwords are never stored in plaintext; only SHA-256 hex hashes are persisted.
+
+```typescript
+interface SubjectInvitationDocument {
+  id: string;                      // Document key (e.g. 'sinv_CS101_1774358400000')
+  subjectId: string;               // Target subject ID
+  subjectName: string;             // Official subject title
+  subjectCode: string;             // Subject code (e.g. 'CS-101')
+  invitationCode: string;          // Cryptographic invitation code (e.g. 'CS101-7M9K2X')
+  passwordHash: string;            // SHA-256 hex hash of the invitation password (never plaintext)
+  status: 'active' | 'reserved' | 'claimed' | 'revoked' | 'expired';
+  createdAt: string;               // ISO timestamp of generation
+  createdBy: string;               // Email of administrator
+  reservedForEmail?: string;       // Email of teacher during pending email verification
+  reservedAt?: string;             // ISO timestamp of reservation
+  claimedAt?: string;              // ISO timestamp of claim completion
+  claimedByUid?: string;           // Firebase Auth UID of verified teacher
+  claimedByEmail?: string;         // Verified email of teacher
+  revokedAt?: string;              // ISO timestamp if revoked
+  revokedBy?: string;              // Email of administrator who revoked
+  revocationReason?: string;       // Audit reason for revocation
 }
 ```
 

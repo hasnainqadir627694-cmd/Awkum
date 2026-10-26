@@ -26,7 +26,7 @@ export interface AdminUser {
   crRevokedAt?: string;
   crRevocationReason?: string;
   crAcknowledged?: boolean;
-  teacherStatus?: 'active' | 'revoked' | 'none';
+  teacherStatus?: 'active' | 'registration_pending_verification' | 'revoked' | 'none';
   teacherAssignedAt?: string;
   teacherAssignedBy?: string;
   teacherRevokedAt?: string;
@@ -78,6 +78,38 @@ export interface SubjectConfig {
   teacherAssignedAt?: string | null;
   assignmentId?: string | null;
   lastConfirmedActiveAt?: string | null;
+  invitationId?: string | null;
+  invitationCode?: string | null;
+  invitationStatus?: 'active' | 'awaiting_teacher' | 'claimed' | 'revoked' | null;
+}
+
+export interface SubjectInvitation {
+  id: string; // e.g. "inv_subj_pf_xxx"
+  subjectId: string;
+  subjectName: string;
+  subjectCode?: string;
+  assignedClass?: string;
+  creditHours?: number;
+  invitationCode: string; // e.g. "PF-X7K9Q2"
+  invitationPassword?: string;
+  passwordHash?: string; // SHA-256 hash (never plaintext in storage)
+  status: 'available' | 'active' | 'reserved' | 'registration_pending_verification' | 'claimed' | 'revoked';
+  teacherUid?: string;
+  teacherName?: string;
+  teacherEmail?: string;
+  createdAt: string;
+  createdBy: string;
+  claimedAt?: string | null;
+  claimedByEmail?: string | null;
+  claimedByName?: string | null;
+  claimedByUid?: string | null;
+  reservedAt?: string | null;
+  reservedForEmail?: string | null;
+  reservedForUid?: string | null;
+  revokedAt?: string | null;
+  revokedBy?: string | null;
+  revocationReason?: string | null;
+  expiresAt?: string | null;
 }
 
 export interface SubjectTeacherAssignment {

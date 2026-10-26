@@ -96,16 +96,17 @@ graph TD
     │   │   ├── CRLayout.tsx                   # CR Workspace layout and navigation
     │   │   ├── CRNotifyTeacherView.tsx        # Faculty alert dispatcher (Screen 11)
     │   │   ├── CRPdfModal.tsx                 # Authentic A4 PDF preview modal (Screen 10)
-    │   │   └── CRProfileView.tsx              # CR appointment and profile details (Screen 13)
+    │   │   ├── CRProfileView.tsx              # CR appointment and profile details (Screen 13)
+    │   │   └── CRSchedulePlannerView.tsx      # Manual recurring weekly schedule editor & exceptions
     │   └── screens/           # Student Portal screens
     │       ├── AssignmentsScreen.tsx          # Assignment list, details, and submissions
     │       ├── ClassesScreen.tsx              # Enrolled subjects and document library
-    │       ├── HomeScreen.tsx                 # Student dashboard and Next Class hero card
+    │       ├── HomeScreen.tsx                 # Student dashboard, active class progress bar, and countdown
     │       ├── LoginScreen.tsx                # Unified login and account creation
     │       ├── NotificationsScreen.tsx        # University alerts and announcements
     │       ├── ProfileScreen.tsx              # Student personal record and settings
     │       ├── ProgressScreen.tsx             # Attendance progress charts and breakdown
-    │       ├── ScheduleScreen.tsx             # Interactive semester timetable
+    │       ├── ScheduleScreen.tsx             # Interactive recurring semester timetable & day view
     │       ├── SubjectDetailView.tsx          # Subject syllabus and file explorer
     │       └── UnavailablePortalScreen.tsx    # Fallback for unconfigured roles
     ├── data/
@@ -118,6 +119,8 @@ graph TD
         ├── brandingService.ts     # Dynamic logo and university visual identity
         ├── firebase.ts            # Client-side Firebase SDK initialization
         ├── pdfReportService.ts    # Client-side A4 attendance PDF generator (jsPDF)
+        ├── scheduleEngine.ts      # Deterministic Karachi timezone weekly recurrence, validation, & timers
+        ├── scheduleService.ts     # Firestore CRUD, history snapshots, and real-time listeners for timetable
         └── teacherAlertService.ts # Faculty alert dispatching and cooldown management
 ```
 
@@ -220,20 +223,30 @@ sequenceDiagram
    - Hides CR entry points from Home dashboard and SideDrawer.
    - Subsequent calls to `/api/cr/verify-operation` receive `403 Forbidden`.
 
-### 5.3 Subject-Wise Teacher Assignment & Management Architecture
-Subject management is strictly scoped per subject to ensure accurate authorization and multi-subject faculty governance:
-1. **Selection First (Step 1)**: Master Admin filters, searches, and selects an authentic curriculum subject from Firestore (`subjects`).
-2. **Subject Scoped Workspace (Step 2)**: Operations are isolated strictly to the selected subject. Current active teacher status, course code, credit hours, and historical learning resources are displayed.
-3. **Verified Faculty Discovery (Step 3)**: Master Admin searches verified faculty by exact registered Gmail from Firebase Auth/Firestore user registry. The system confirms `emailVerified === true` and displays the verified Firebase UID, name, and email before selection.
-4. **Subject-Scoped Assignment (Step 4)**: 
-   - Generates persistent assignment record in `subjectTeacherAssignments/{assignmentId}` linking `subjectId` and `teacherUid`.
-   - Updates `subjects/{subjectId}` with `assignedTeacher`, `teacherEmail`, `teacherUid`, `teacherAssignedAt`.
-   - Preserves non-faculty roles (e.g. `roles: ['student', 'teacher']`).
-5. **Dynamic Teacher Multi-Subject Workspace**:
-   - `TeacherLayout.tsx` dynamically subscribes via `subscribeToTeacherAssignedSubjects({ uid, email })`.
-   - Teachers assigned to multiple courses can toggle between workspaces via a dedicated dropdown.
-   - If zero subjects are assigned, renders an informative empty state with verified credentials and instructions to contact Master Admin.
-6. **Preserved Learning Resources Guarantee**: Revoking or reassigning a teacher never cascades to delete course documents (`documents`), assignments (`assignments`), or student submissions (`submissions`).
+### 5.3 Subject Teacher Invitation Credentials Architecture
+Faculty assignment uses a secure, subject-specific invitation credential workflow rather than searching for pre-existing Gmail accounts:
+1. **Automated Credential Generation**:
+   - Whenever Master Admin creates an unassigned subject or regenerates credentials in `TeacherAssignmentsView`, the system generates a cryptographically unique Invitation Code (e.g. `CS101-7M9K2X`) and a 12-character high-entropy invitation password.
+   - Only the SHA-256 hex hash of the password is saved into Firestore (`subjectInvitations/{id}`).
+   - Plaintext credentials are displayed once to the authorized Master Admin with 1-click Copy Code and Copy Password controls.
+2. **Universal Login Integration**:
+   - In `LoginScreen.tsx`, users can toggle between `Existing Account Login` and `Join as Subject Teacher`. No separate teacher login page or detached URL is required.
+   - Faculty members enter the Subject Invitation Code and Invitation Password directly.
+3. **Cryptographic Backend Verification (`POST /api/teacher-invitations/verify`)**:
+   - The backend hashes the submitted password with SHA-256 and compares it against the stored hash in `subjectInvitations`.
+   - Checks that the invitation is `active`, has not expired or been revoked, and confirms the single-active-teacher policy for the subject.
+   - Fetches verified subject details (name, code, credit hours, assigned class) directly from Firestore and displays them for confirmation.
+4. **Teacher Registration & Email Verification**:
+   - Faculty enters full name, university email, and chooses an account password.
+   - Firebase Authentication creates the account (or links an existing account after password verification).
+   - The invitation is reserved (`status: 'reserved'`) for concurrency protection while Firebase sends an email verification link.
+   - Once the faculty verifies their email, the client triggers `POST /api/teacher-invitations/claim`.
+5. **Atomic Claim & Workspace Activation**:
+   - The backend independently verifies `emailVerified: true` from Firebase Auth.
+   - Atomically updates `subjectInvitations` to `status: 'claimed'`, updates the subject to `status: 'Assigned'`, creates `subjectTeacherAssignments`, updates the user's profile with `role: 'teacher'`, and writes an immutable audit record.
+   - The teacher is immediately transitioned into their Teacher Workspace.
+6. **Preserved Learning Resources Guarantee**:
+   - Revoking a teacher access (`POST /api/admin/revoke-subject-teacher`) resets the subject to unassigned and generates fresh invitation credentials, while preserving all course documents (`documents`), assignments (`assignments`), and student submissions (`submissions`).
 
 ---
 

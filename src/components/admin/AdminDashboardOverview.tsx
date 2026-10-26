@@ -657,7 +657,7 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
                 <p className="text-lg font-bold text-[#668064]">{auditResult.validCount}</p>
               </div>
               <div className="p-3 bg-amber-50 rounded-xl border border-amber-200">
-                <span className="text-[10px] text-amber-700 font-semibold">Orphan Records</span>
+                <span className="text-[10px] text-amber-700 font-semibold">Duplicate & Orphaned</span>
                 <p className="text-lg font-bold text-amber-800">{auditResult.orphanedCount}</p>
               </div>
               <div className="p-3 bg-[#EFE3D3] rounded-xl border border-[#D8C7B4]">
@@ -701,7 +701,7 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
               {auditResult.orphanedAccounts.length > 0 && (
                 <div>
                   <h4 className="font-bold text-amber-800 mb-1.5 flex items-center justify-between">
-                    <span>Orphaned Records (Lacking Firebase Auth UID)</span>
+                    <span>Duplicate Secondary & Orphan Records ({auditResult.dryRun ? 'Ready to Archive' : 'Archived'})</span>
                     <span className="text-[10px] text-amber-700">{auditResult.orphanedAccounts.length} Flagged</span>
                   </h4>
                   <div className="space-y-1 max-h-36 overflow-y-auto bg-amber-50/50 p-2 rounded-xl border border-amber-200">

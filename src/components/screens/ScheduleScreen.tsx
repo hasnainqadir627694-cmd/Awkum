@@ -14,59 +14,165 @@ import {
   BookOpen,
   Calculator,
   Atom,
+  Radio,
+  CalendarRange,
+  ChevronRight,
+  ShieldCheck,
+  AlertTriangle,
 } from 'lucide-react';
 import { ScheduleItem } from '../../data/portalData';
+import {
+  RecurringSchedule,
+  ScheduleOverrideItem,
+  LiveScheduleState,
+  WeekdayCode,
+  WEEKDAYS_ORDER,
+  WEEKDAY_FULL_NAMES,
+  getKarachiDateTime,
+  timeStringToMinutes,
+} from '../../lib/scheduleEngine';
 
 interface ScheduleScreenProps {
   scheduleItems: ScheduleItem[];
   reminders: Record<string, { enabled: boolean; minutes: number }>;
   onToggleReminder: (classId: string, minutes: number) => void;
+  publishedSchedule?: RecurringSchedule | null;
+  scheduleOverrides?: ScheduleOverrideItem[];
+  liveScheduleState?: LiveScheduleState | null;
 }
 
 export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
   scheduleItems,
   reminders,
   onToggleReminder,
+  publishedSchedule,
+  scheduleOverrides = [],
+  liveScheduleState,
 }) => {
-  const dayNames: ('Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri')[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
-  const todayDayIndex = new Date().getDay(); // 0 = Sun, 1 = Mon ... 5 = Fri
-  const currentWeekday = todayDayIndex >= 1 && todayDayIndex <= 5 ? dayNames[todayDayIndex - 1] : 'Mon';
+  // Determine current date & weekday in Asia/Karachi
+  const karachiNow = getKarachiDateTime();
+  const currentWeekday: WeekdayCode = karachiNow.weekday;
 
   const [viewMode, setViewMode] = useState<'today' | 'weekly'>('today');
-  const [selectedDay, setSelectedDay] = useState<'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri'>(currentWeekday);
-  const [reminderModalClass, setReminderModalClass] = useState<ScheduleItem | null>(null);
+  const [selectedDay, setSelectedDay] = useState<WeekdayCode>(currentWeekday);
+  const [reminderModalClass, setReminderModalClass] = useState<{
+    id: string;
+    subjectName: string;
+    startTime: string;
+  } | null>(null);
   const [selectedMinutes, setSelectedMinutes] = useState<number>(15);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const days: { day: 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri'; date: number; label: string }[] = [
-    { day: 'Mon', date: 20, label: 'Mon' },
-    { day: 'Tue', date: 21, label: 'Tue' },
-    { day: 'Wed', date: 22, label: 'Wed' },
-    { day: 'Thu', date: 23, label: 'Thu' },
-    { day: 'Fri', date: 24, label: 'Fri' },
-  ];
+  // Compute the current week's dates (Mon - Sun) in Karachi time
+  const currentWeekDays: {
+    day: WeekdayCode;
+    dateNum: number;
+    dateString: string;
+    label: string;
+    isToday: boolean;
+    hasClasses: boolean;
+  }[] = React.useMemo(() => {
+    const today = new Date();
+    // Monday of current week
+    const currentDayOfWeek = today.getDay(); // 0 is Sun, 1 is Mon...
+    const distanceToMonday = (currentDayOfWeek + 6) % 7; // distance from Monday
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - distanceToMonday);
 
-  // In "today" mode, show current weekday. In "weekly" mode, show selected day.
-  const activeDay = viewMode === 'today' ? currentWeekday : selectedDay;
-  const filteredClasses = scheduleItems.filter((item) => item.day === activeDay);
+    return WEEKDAYS_ORDER.map((dayCode, index) => {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + index);
+      const karachiD = getKarachiDateTime(d);
+
+      const hasClasses = publishedSchedule
+        ? publishedSchedule.items.some((it) => it.day === dayCode)
+        : scheduleItems.some((it) => it.day === dayCode);
+
+      return {
+        day: dayCode,
+        dateNum: karachiD.day,
+        dateString: karachiD.dateString,
+        label: dayCode,
+        isToday: dayCode === currentWeekday,
+        hasClasses,
+      };
+    });
+  }, [currentWeekday, publishedSchedule, scheduleItems]);
+
+  const activeDay: WeekdayCode = viewMode === 'today' ? currentWeekday : selectedDay;
+  const activeDayMeta = currentWeekDays.find((d) => d.day === activeDay);
+
+  // Filter items for activeDay
+  const displayedEntries = React.useMemo(() => {
+    if (publishedSchedule && publishedSchedule.items.length > 0) {
+      const dayEntries = publishedSchedule.items
+        .filter((entry) => entry.day === activeDay)
+        .sort((a, b) => timeStringToMinutes(a.startTime) - timeStringToMinutes(b.startTime));
+
+      return dayEntries.map((entry) => {
+        // Check if there is an override for this specific calendar date
+        const dateStr = activeDayMeta?.dateString || '';
+        const override = scheduleOverrides.find(
+          (o) => o.date === dateStr && o.entryId === entry.id
+        );
+
+        const isCancelled = override?.type === 'cancelled';
+        const isRescheduled = override?.type === 'rescheduled';
+
+        return {
+          id: entry.id,
+          subjectId: entry.subjectId,
+          subjectCode: entry.subjectCode,
+          subjectName: entry.subjectName,
+          startTime: isRescheduled && override?.rescheduledStartTime ? override.rescheduledStartTime : entry.startTime,
+          endTime: isRescheduled && override?.rescheduledEndTime ? override.rescheduledEndTime : entry.endTime,
+          room: isRescheduled && override?.rescheduledRoom ? override.rescheduledRoom : entry.room || 'Department Lecture Hall',
+          teacher: isRescheduled && override?.rescheduledTeacher ? override.rescheduledTeacher : entry.teacherName || 'Faculty Instructor',
+          isCancelled,
+          cancelReason: override?.reason,
+          isRescheduled,
+          rescheduleReason: override?.reason,
+        };
+      });
+    }
+
+    // Fallback to legacy scheduleItems if no publishedSchedule is available
+    return scheduleItems
+      .filter((it) => it.day === activeDay)
+      .map((it) => ({
+        id: it.id,
+        subjectId: it.subjectId,
+        subjectCode: it.subjectId.toUpperCase(),
+        subjectName: it.subjectName,
+        startTime: it.startTime,
+        endTime: it.endTime,
+        room: it.room,
+        teacher: it.teacher,
+        isCancelled: false,
+        cancelReason: undefined,
+        isRescheduled: false,
+        rescheduleReason: undefined,
+      }));
+  }, [publishedSchedule, activeDay, activeDayMeta?.dateString, scheduleOverrides, scheduleItems]);
 
   const getSubjectIcon = (subjectId: string) => {
-    switch (subjectId) {
-      case 'pf-theory':
-        return <Code2 className="w-4 h-4 text-[#493222]" />;
-      case 'pf-lab':
-        return <Monitor className="w-4 h-4 text-[#493222]" />;
-      case 'management':
-        return <Briefcase className="w-4 h-4 text-[#493222]" />;
-      case 'english':
-        return <BookOpen className="w-4 h-4 text-[#493222]" />;
-      case 'maths':
-        return <Calculator className="w-4 h-4 text-[#493222]" />;
-      case 'physics':
-        return <Atom className="w-4 h-4 text-[#493222]" />;
-      default:
-        return <BookOpen className="w-4 h-4 text-[#493222]" />;
+    const low = subjectId.toLowerCase();
+    if (low.includes('code') || low.includes('pf') || low.includes('cs') || low.includes('prog')) {
+      return <Code2 className="w-4 h-4 text-[#493222]" />;
     }
+    if (low.includes('lab') || low.includes('mon')) {
+      return <Monitor className="w-4 h-4 text-[#493222]" />;
+    }
+    if (low.includes('mgt') || low.includes('bus') || low.includes('manag')) {
+      return <Briefcase className="w-4 h-4 text-[#493222]" />;
+    }
+    if (low.includes('math') || low.includes('calc') || low.includes('stat')) {
+      return <Calculator className="w-4 h-4 text-[#493222]" />;
+    }
+    if (low.includes('phys') || low.includes('sci')) {
+      return <Atom className="w-4 h-4 text-[#493222]" />;
+    }
+    return <BookOpen className="w-4 h-4 text-[#493222]" />;
   };
 
   const handleSaveReminder = () => {
@@ -76,7 +182,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
     setToastMessage(
       isNowEnabled
         ? `Reminder set for ${reminderModalClass.subjectName} (${selectedMinutes}m prior).`
-        : `Reminder cancelled for ${reminderModalClass.subjectName}.`
+        : `Reminder removed for ${reminderModalClass.subjectName}.`
     );
     setReminderModalClass(null);
     setTimeout(() => setToastMessage(null), 3000);
@@ -96,25 +202,55 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
       <div className="flex items-center justify-between pt-1">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-[#38271C]">
-            My Schedule
+            Weekly Timetable
           </h2>
           <p className="text-xs font-medium text-[#806A56] mt-0.5">
-            View timetable and configure class reminders
+            Recurring academic schedule synchronized across the semester
           </p>
         </div>
       </div>
 
-      {/* View Mode Toggle: Today vs Weekly (matching reference Screen 03) */}
+      {/* Validity Banner */}
+      {publishedSchedule && (
+        <div className="bg-[#FFF9F1] border border-[#E6D8C7] rounded-2xl p-3 shadow-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-xl bg-[#F8F0E5] text-[#493222] flex items-center justify-center shrink-0">
+              <CalendarRange className="w-4 h-4 text-[#493222]" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-[#38271C] truncate">
+                  {publishedSchedule.semester || 'Semester Timetable'}
+                </span>
+                <span className="text-[10px] font-bold bg-[#EAF2E9] text-[#668064] px-1.5 py-0.2 rounded-full">
+                  v{publishedSchedule.publishedVersion}
+                </span>
+              </div>
+              <p className="text-[11px] text-[#806A56] truncate">
+                Valid: {publishedSchedule.startDate} to {publishedSchedule.endDate}
+              </p>
+            </div>
+          </div>
+          <span className="text-[10px] font-bold text-[#668064] bg-[#EAF2E9] px-2 py-0.5 rounded-full shrink-0">
+            Recurring Weekly
+          </span>
+        </div>
+      )}
+
+      {/* View Mode Toggle: Today vs Weekly */}
       <div className="flex items-center p-1 bg-[#EFE3D3] rounded-xl border border-[#E6D8C7]">
         <button
-          onClick={() => setViewMode('today')}
+          onClick={() => {
+            setViewMode('today');
+            setSelectedDay(currentWeekday);
+          }}
           className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${
             viewMode === 'today'
               ? 'bg-[#493222] text-[#FFF9F1] shadow-xs'
               : 'text-[#806A56] hover:text-[#38271C]'
           }`}
         >
-          Today
+          Today ({WEEKDAY_FULL_NAMES[currentWeekday]})
         </button>
         <button
           onClick={() => setViewMode('weekly')}
@@ -124,15 +260,14 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
               : 'text-[#806A56] hover:text-[#38271C]'
           }`}
         >
-          Weekly
+          Full Week Timetable
         </button>
       </div>
 
-      {/* Day Selector (Week days horizontal strip) */}
-      <div className="flex items-center justify-between gap-1.5 px-0.5">
-        {days.map((item) => {
+      {/* Weekday Selector Strip (Mon - Sun) */}
+      <div className="grid grid-cols-7 gap-1 px-0.5">
+        {currentWeekDays.map((item) => {
           const isSelected = activeDay === item.day;
-          const isToday = item.day === 'Wed';
 
           return (
             <button
@@ -141,7 +276,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                 if (viewMode === 'today') setViewMode('weekly');
                 setSelectedDay(item.day);
               }}
-              className={`flex-1 flex flex-col items-center py-2 px-1 rounded-2xl border transition-all ${
+              className={`flex flex-col items-center py-2 px-1 rounded-2xl border transition-all cursor-pointer ${
                 isSelected
                   ? 'bg-[#493222] border-[#493222] text-[#FFF9F1] shadow-sm scale-102'
                   : 'bg-[#FFF9F1] border-[#E6D8C7] text-[#38271C] hover:border-[#806A56]'
@@ -159,11 +294,11 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                   isSelected ? 'text-[#FFF9F1]' : 'text-[#38271C]'
                 }`}
               >
-                {item.date}
+                {item.dateNum}
               </span>
-              {isToday && (
+              {item.isToday && (
                 <span
-                  className={`w-1 h-1 rounded-full mt-1 ${
+                  className={`w-1.5 h-1.5 rounded-full mt-1 ${
                     isSelected ? 'bg-[#668064]' : 'bg-[#493222]'
                   }`}
                 />
@@ -173,58 +308,99 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
         })}
       </div>
 
+      {/* Selected Day Header */}
+      <div className="flex items-center justify-between px-1">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold text-[#38271C]">
+            {WEEKDAY_FULL_NAMES[activeDay]}
+          </span>
+          {activeDayMeta?.dateString && (
+            <span className="text-[11px] text-[#806A56]">
+              ({activeDayMeta.dateString})
+            </span>
+          )}
+        </div>
+        <span className="text-xs font-medium text-[#806A56]">
+          {displayedEntries.length === 1 ? '1 Class' : `${displayedEntries.length} Classes`}
+        </span>
+      </div>
+
       {/* Schedule Items List */}
       <div className="space-y-3">
-        {filteredClasses.length === 0 ? (
+        {displayedEntries.length === 0 ? (
           <div className="bg-[#FFF9F1] border border-[#E6D8C7] rounded-2xl p-8 text-center">
             <Calendar className="w-8 h-8 text-[#806A56] mx-auto mb-2" />
             <h4 className="text-sm font-bold text-[#38271C]">
-              No Classes Scheduled
+              No Classes on {WEEKDAY_FULL_NAMES[activeDay]}
             </h4>
             <p className="text-xs text-[#806A56] mt-1">
-              There are no lecture or laboratory sessions recorded for this day.
+              There are no lecture or laboratory sessions recorded for this day in the recurring timetable.
             </p>
           </div>
         ) : (
-          filteredClasses.map((item) => {
+          displayedEntries.map((item) => {
             const isReminderActive = reminders[item.id]?.enabled;
-            const isNext = item.startsIn !== undefined;
+            const isCurrentClass =
+              liveScheduleState?.currentClass?.entryId === item.id &&
+              activeDay === currentWeekday;
+            const isNextClass =
+              liveScheduleState?.nextClass?.entryId === item.id &&
+              activeDay === currentWeekday;
 
             return (
               <div
                 key={item.id}
                 className={`p-3.5 rounded-2xl border transition-all shadow-xs ${
-                  isNext
+                  item.isCancelled
+                    ? 'bg-rose-50/50 border-rose-200 opacity-80'
+                    : isCurrentClass
+                    ? 'bg-[#FFFDF9] border-[#668064] ring-2 ring-[#668064]/20'
+                    : isNextClass
                     ? 'bg-[#FFFDF9] border-[#493222] ring-1 ring-[#493222]/20'
                     : 'bg-[#FFF9F1] border-[#E6D8C7]'
                 }`}
               >
                 <div className="flex items-center justify-between">
                   {/* Left: Time & Icon & Details */}
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
                     <div className="w-10 h-10 rounded-xl bg-[#F8F0E5] border border-[#E6D8C7] flex items-center justify-center shrink-0">
                       {getSubjectIcon(item.subjectId)}
                     </div>
-                    <div>
-                      <div className="flex items-center gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-[11px] font-bold text-[#806A56]">
-                          {item.startTime}
+                          {item.startTime} - {item.endTime}
                         </span>
-                        {isNext && (
+                        {isCurrentClass && (
+                          <span className="text-[10px] font-bold text-white bg-[#668064] px-1.5 py-0.2 rounded flex items-center gap-1">
+                            <Radio className="w-2.5 h-2.5 animate-pulse" />
+                            Live Now
+                          </span>
+                        )}
+                        {isNextClass && (
                           <span className="text-[10px] font-bold text-[#668064] bg-[#EAF2E9] px-1.5 py-0.2 rounded">
                             Next Class
                           </span>
                         )}
-                        {item.status === 'completed' && (
-                          <span className="text-[10px] font-semibold text-[#806A56] bg-[#EFE3D3] px-1.5 py-0.2 rounded">
-                            Completed
+                        {item.isCancelled && (
+                          <span className="text-[10px] font-bold text-rose-700 bg-rose-100 px-1.5 py-0.2 rounded">
+                            Cancelled for Today
+                          </span>
+                        )}
+                        {item.isRescheduled && (
+                          <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.2 rounded">
+                            Rescheduled
                           </span>
                         )}
                       </div>
-                      <h3 className="text-sm font-bold text-[#38271C] mt-0.5">
+                      <h3
+                        className={`text-sm font-bold mt-0.5 truncate ${
+                          item.isCancelled ? 'line-through text-rose-800' : 'text-[#38271C]'
+                        }`}
+                      >
                         {item.subjectName}
                       </h3>
-                      <div className="flex items-center gap-2 text-[11px] text-[#806A56] mt-0.5">
+                      <div className="flex items-center gap-2 text-[11px] text-[#806A56] mt-0.5 truncate">
                         <span className="flex items-center gap-1">
                           <MapPin className="w-3 h-3" />
                           <span>{item.room}</span>
@@ -232,17 +408,31 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                         <span>·</span>
                         <span>{item.teacher}</span>
                       </div>
+                      {item.cancelReason && (
+                        <p className="text-[10px] font-medium text-rose-600 mt-1">
+                          Reason: {item.cancelReason}
+                        </p>
+                      )}
+                      {item.rescheduleReason && (
+                        <p className="text-[10px] font-medium text-amber-600 mt-1">
+                          Note: {item.rescheduleReason}
+                        </p>
+                      )}
                     </div>
                   </div>
 
-                  {/* Right: Reminder Bell & Options */}
-                  <div className="flex items-center gap-1">
+                  {/* Right: Reminder Bell */}
+                  <div className="flex items-center gap-1 shrink-0 ml-2">
                     <button
                       onClick={() => {
-                        setReminderModalClass(item);
+                        setReminderModalClass({
+                          id: item.id,
+                          subjectName: item.subjectName,
+                          startTime: item.startTime,
+                        });
                         setSelectedMinutes(reminders[item.id]?.minutes || 15);
                       }}
-                      className={`p-2 rounded-xl transition-colors ${
+                      className={`p-2 rounded-xl transition-colors cursor-pointer ${
                         isReminderActive
                           ? 'bg-[#EAF2E9] text-[#668064] hover:bg-[#D5E5D4]'
                           : 'text-[#806A56] hover:bg-[#F3E9DD] hover:text-[#38271C]'
@@ -259,16 +449,6 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                       ) : (
                         <Bell className="w-4 h-4" />
                       )}
-                    </button>
-                    <button
-                      onClick={() => {
-                        setReminderModalClass(item);
-                        setSelectedMinutes(reminders[item.id]?.minutes || 15);
-                      }}
-                      className="p-1.5 text-[#806A56] hover:text-[#38271C] rounded-lg"
-                      aria-label="More class options"
-                    >
-                      <MoreVertical className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
@@ -288,7 +468,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
               </div>
               <div>
                 <h3 className="font-bold text-sm text-[#38271C]">
-                  Class Reminder
+                  Class Notification Alert
                 </h3>
                 <p className="text-xs text-[#806A56]">
                   {reminderModalClass.subjectName} · {reminderModalClass.startTime}
@@ -297,7 +477,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
             </div>
 
             <p className="text-xs text-[#806A56] mb-4">
-              Select how many minutes before class you want to receive an alert:
+              Select how many minutes before class you want to be notified:
             </p>
 
             <div className="grid grid-cols-3 gap-2 mb-4">
@@ -306,7 +486,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                   key={mins}
                   type="button"
                   onClick={() => setSelectedMinutes(mins)}
-                  className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all ${
+                  className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
                     selectedMinutes === mins
                       ? 'bg-[#493222] border-[#493222] text-[#FFF9F1]'
                       : 'bg-white border-[#E6D8C7] text-[#38271C] hover:border-[#806A56]'
@@ -321,14 +501,14 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
               <button
                 type="button"
                 onClick={() => setReminderModalClass(null)}
-                className="px-3 py-1.5 text-xs font-semibold text-[#806A56] hover:bg-[#F3E9DD] rounded-lg transition-colors"
+                className="px-3 py-1.5 text-xs font-semibold text-[#806A56] hover:bg-[#F3E9DD] rounded-lg transition-colors cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleSaveReminder}
-                className="px-4 py-2 bg-[#493222] hover:bg-[#38271C] text-[#FFF9F1] text-xs font-bold rounded-xl transition-colors shadow-xs"
+                className="px-4 py-2 bg-[#493222] hover:bg-[#38271C] text-[#FFF9F1] text-xs font-bold rounded-xl transition-colors shadow-xs cursor-pointer"
               >
                 {reminders[reminderModalClass.id]?.enabled
                   ? 'Turn Off'

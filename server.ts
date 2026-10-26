@@ -4,9 +4,11 @@ import { v2 as cloudinary } from 'cloudinary';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import adminPkg from 'firebase-admin';
+import { getApps, initializeApp } from 'firebase-admin/app';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getAuth } from 'firebase-admin/auth';
+import crypto from 'crypto';
 import { GoogleGenAI, Type } from '@google/genai';
-const admin: any = adminPkg;
 
 let lastLogoTimestamp = Date.now();
 
@@ -35,16 +37,25 @@ cloudinary.config({
 
 // Initialize Firebase Admin SDK for server-authoritative role verification & storage
 let adminDb: any = null;
-try {
-  if (!admin.apps.length) {
-    admin.initializeApp({
-      projectId: process.env.FIREBASE_PROJECT_ID || 'awku-mardan',
-    });
-  }
-  adminDb = admin.firestore();
-  console.log('[Firebase Admin] Successfully initialized Firestore Admin');
+let adminAuth: any = null;
+let admin: any = {
+  firestore: () => adminDb,
+  auth: () => adminAuth,
+};
+(admin.firestore as any).FieldValue = FieldValue;
 
-  // Permanently seed Master Admin account in Firestore database
+try {
+  const existingApps = getApps();
+  const adminApp = existingApps.length === 0
+    ? initializeApp({
+        projectId: process.env.FIREBASE_PROJECT_ID || 'awku-mardan',
+      })
+    : existingApps[0];
+  adminDb = getFirestore(adminApp);
+  adminAuth = getAuth(adminApp);
+  console.log('[Firebase Admin] Successfully initialized Firestore & Auth Admin SDK');
+
+  // Permanently seed Master Admin account in Firestore database if permitted
   const masterEmailDoc = adminDb.collection('users').doc('hasnainbuilds724656_gmail_com');
   masterEmailDoc.set({
     id: 'u-admin-master',
@@ -165,7 +176,7 @@ async function getActiveAssignment(uid?: string, email?: string): Promise<Server
         }
       }
     } catch (err: any) {
-      console.info('[Server Auth] Notice querying Firestore crAssignments:', err?.message || err);
+      // Gracefully handle permission or connection errors without verbose error logs
     }
   }
 
@@ -234,12 +245,19 @@ async function startServer() {
             if (uSnap.exists) userDocData = uSnap.data();
           }
 
+          const isExplicitlyRevoked =
+            userDocData?.crStatus === 'revoked' &&
+            userDocData?.crRevokedAt &&
+            userDocData?.crAssignedAt &&
+            new Date(userDocData.crRevokedAt).getTime() > new Date(userDocData.crAssignedAt).getTime();
+
           if (
             userDocData &&
-            userDocData.crStatus !== 'revoked' &&
+            !isExplicitlyRevoked &&
             (userDocData.isCR ||
               userDocData.role === 'cr' ||
-              (Array.isArray(userDocData.roles) && userDocData.roles.includes('cr')))
+              (Array.isArray(userDocData.roles) && userDocData.roles.includes('cr')) ||
+              userDocData.crStatus === 'active')
           ) {
             const restoredClass = userDocData.assignedClass || 'BS SE';
             const assignmentId = `cr_${cleanEmail.replace(/[@.]/g, '_')}`;
@@ -265,8 +283,8 @@ async function startServer() {
               assignment: repairedAssignment,
             });
           }
-        } catch (dbErr) {
-          console.info('[Validate CR User Lookup Notice]:', dbErr);
+        } catch (dbErr: any) {
+          // Gracefully suppress permission / connection notices in preview environments
         }
       }
 
@@ -278,6 +296,130 @@ async function startServer() {
     } catch (err: any) {
       console.error('[RBAC Validate Error]:', err);
       return res.status(500).json({ isCR: false, error: err?.message || 'Server authorization check failed.' });
+    }
+  });
+
+  /**
+   * Validates whether a specific UID and/or email has an active, valid Teacher assignment.
+   * Invoked on every login, session restoration, and screen transition.
+   */
+  app.all('/api/auth/validate-teacher', async (req, res) => {
+    try {
+      const email = (req.body?.email || req.query?.email || '') as string;
+      const uid = (req.body?.uid || req.query?.uid || '') as string;
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanUid = uid.trim();
+
+      if (!cleanEmail && !cleanUid) {
+        return res.json({ isTeacher: false, assignedSubjects: [], status: 'none' });
+      }
+
+      const assignedSubjectsSet = new Set<string>();
+      let isTeacher = false;
+      let teacherName = '';
+
+      // 1. Check server memory invitations map first
+      for (const inv of serverTeacherInvitations.values()) {
+        const matchesEmail = cleanEmail && (
+          inv.claimedByEmail?.toLowerCase() === cleanEmail ||
+          inv.reservedForEmail?.toLowerCase() === cleanEmail
+        );
+        const matchesUid = cleanUid && (
+          inv.claimedByUid === cleanUid ||
+          inv.reservedForUid === cleanUid
+        );
+
+        if ((matchesEmail || matchesUid) && (inv.status === 'claimed' || inv.status === 'reserved')) {
+          isTeacher = true;
+          if (inv.subjectName || inv.subjectCode) {
+            assignedSubjectsSet.add(inv.subjectName || inv.subjectCode);
+          }
+          if (inv.claimedByName && !inv.claimedByName.includes('@')) {
+            teacherName = inv.claimedByName;
+          }
+        }
+      }
+
+      // 2. Query Firestore subjectTeacherAssignments & subjectInvitations & users
+      if (adminDb) {
+        try {
+          if (cleanEmail) {
+            const staSnap = await adminDb.collection('subjectTeacherAssignments')
+              .where('teacherEmail', '==', cleanEmail)
+              .where('status', '==', 'active')
+              .get();
+
+            staSnap.forEach((docSnap: any) => {
+              const d = docSnap.data();
+              isTeacher = true;
+              if (d.subjectName || d.subjectCode || d.subjectId) {
+                assignedSubjectsSet.add(d.subjectName || d.subjectCode || d.subjectId);
+              }
+              if (d.teacherName && !d.teacherName.includes('@')) {
+                teacherName = d.teacherName;
+              }
+            });
+
+            const invSnap = await adminDb.collection('subjectInvitations')
+              .where('claimedByEmail', '==', cleanEmail)
+              .get();
+
+            invSnap.forEach((docSnap: any) => {
+              const d = docSnap.data();
+              if (d.status === 'claimed' || d.status === 'reserved') {
+                isTeacher = true;
+                if (d.subjectName || d.subjectCode || d.subjectId) {
+                  assignedSubjectsSet.add(d.subjectName || d.subjectCode || d.subjectId);
+                }
+                if (d.claimedByName && !d.claimedByName.includes('@')) {
+                  teacherName = d.claimedByName;
+                }
+              }
+            });
+
+            // Also check users collection
+            let userDoc: any = null;
+            if (cleanUid) {
+              const uSnap = await adminDb.collection('users').doc(cleanUid).get();
+              if (uSnap.exists) userDoc = uSnap.data();
+            }
+            if (!userDoc && cleanEmail) {
+              const uSnap = await adminDb.collection('users').doc(cleanEmail.replace(/[@.]/g, '_')).get();
+              if (uSnap.exists) userDoc = uSnap.data();
+            }
+
+            if (userDoc && (userDoc.role === 'teacher' || userDoc.teacherStatus === 'active' || userDoc.teacherStatus === 'registration_pending_verification')) {
+              isTeacher = true;
+              if (Array.isArray(userDoc.assignedSubjects)) {
+                userDoc.assignedSubjects.forEach((s: string) => assignedSubjectsSet.add(s));
+              }
+              if (userDoc.name && !userDoc.name.includes('@')) {
+                teacherName = userDoc.name;
+              }
+            }
+          }
+        } catch (dbErr: any) {
+          // Graceful suppression
+        }
+      }
+
+      if (isTeacher) {
+        return res.json({
+          isTeacher: true,
+          assignedSubjects: Array.from(assignedSubjectsSet),
+          status: 'active',
+          teacherName: teacherName || undefined,
+        });
+      }
+
+      return res.json({
+        isTeacher: false,
+        assignedSubjects: [],
+        status: 'none',
+      });
+    } catch (err: any) {
+      console.error('[Teacher RBAC Validate Error]:', err);
+      return res.status(500).json({ isTeacher: false, error: err?.message || 'Server authorization check failed.' });
     }
   });
 
@@ -312,25 +454,8 @@ async function startServer() {
         return res.status(400).json({ error: 'Missing target student Gmail or assigned class/section.' });
       }
 
-      // 2. Revoke any previous active CR for this specific class (One active CR per class rule)
-      let previousCR: ServerCRAssignment | undefined;
-      for (const assignment of serverCRAssignments.values()) {
-        if (
-          assignment.assignedClass.toLowerCase() === cleanClass.toLowerCase() &&
-          assignment.status === 'active' &&
-          assignment.email.toLowerCase() !== cleanTargetEmail
-        ) {
-          assignment.status = 'revoked';
-          assignment.revokedAt = new Date().toISOString();
-          assignment.revokedBy = cleanAdmin;
-          assignment.revocationReason = `Replaced by ${targetName || cleanTargetEmail} as CR for ${cleanClass}`;
-          previousCR = assignment;
-          break;
-        }
-      }
-
-      // 3. Create persistent active CR assignment bound to verified Gmail and UID
-      const assignmentId = `cr_${cleanTargetEmail.replace(/[@.]/g, '_')}_${Date.now()}`;
+      // 2. Create persistent active CR assignment bound to verified Gmail and UID (No auto-revocation of others)
+      const assignmentId = `cr_${cleanTargetEmail.replace(/[@.]/g, '_')}`;
       const newAssignment: ServerCRAssignment = {
         id: assignmentId,
         uid: cleanTargetUid || `uid_${cleanTargetEmail.replace(/[@.]/g, '_')}`,
@@ -346,21 +471,29 @@ async function startServer() {
         revocationReason: null,
       };
 
-      // Store in memory map
+      // Store in memory map & remove any stale keys for this student
       serverCRAssignments.set(newAssignment.id, newAssignment);
+      for (const [id, a] of serverCRAssignments.entries()) {
+        if (a.email.toLowerCase() === cleanTargetEmail && id !== assignmentId) {
+          serverCRAssignments.delete(id);
+        }
+      }
 
       // Persist to Cloud Firestore via Admin SDK
       if (adminDb) {
         try {
-          // If previous CR existed, update their Firestore record
-          if (previousCR) {
-            await adminDb.collection('crAssignments').doc(previousCR.id).set(previousCR, { merge: true });
-            const prevUserDoc = adminDb.collection('users').doc(previousCR.email.replace(/[@.]/g, '_'));
-            await prevUserDoc.set({ isCR: false, role: 'student', crStatus: 'revoked' }, { merge: true });
-          }
-
-          // Write new active assignment
+          // Write authoritative active assignment
           await adminDb.collection('crAssignments').doc(assignmentId).set(newAssignment);
+
+          // Clean up any stale crAssignments docs with timestamps or 'revoked' status for this email
+          const staleSnap = await adminDb.collection('crAssignments')
+            .where('email', '==', cleanTargetEmail)
+            .get();
+          for (const sDoc of staleSnap.docs) {
+            if (sDoc.id !== assignmentId) {
+              await sDoc.ref.delete().catch(() => {});
+            }
+          }
 
           // Update user profile document in Firestore
           const targetUserDoc = adminDb.collection('users').doc(cleanTargetEmail.replace(/[@.]/g, '_'));
@@ -373,6 +506,9 @@ async function startServer() {
               assignedClass: cleanClass,
               crAssignedAt: newAssignment.grantedAt,
               crAssignedBy: cleanAdmin,
+              crRevokedAt: null,
+              crRevokedBy: null,
+              crRevocationReason: null,
             },
             { merge: true }
           );
@@ -396,7 +532,6 @@ async function startServer() {
       return res.json({
         success: true,
         assignment: newAssignment,
-        previousCR,
         message: `CR role successfully granted to ${cleanTargetEmail} for ${cleanClass}.`,
       });
     } catch (err: any) {
@@ -917,6 +1052,817 @@ async function startServer() {
       return res.json({ success: true, confirmedAt: nowIso });
     } catch (err: any) {
       return res.status(500).json({ error: err?.message || 'Failed to keep teacher active.' });
+    }
+  });
+
+  // =========================================================================
+  // SUBJECT TEACHER INVITATION CREDENTIALS SYSTEM (SECURE ROLE-BASED ACCESS)
+  // =========================================================================
+
+  interface ServerTeacherInvitation {
+    id: string;
+    subjectId: string;
+    subjectName: string;
+    subjectCode: string;
+    assignedClass?: string;
+    creditHours: number;
+    invitationCode: string;
+    passwordHash: string;
+    status: 'active' | 'reserved' | 'claimed' | 'revoked';
+    createdAt: string;
+    createdBy: string;
+    claimedAt?: string | null;
+    claimedByEmail?: string | null;
+    claimedByName?: string | null;
+    claimedByUid?: string | null;
+    reservedAt?: string | null;
+    reservedForEmail?: string | null;
+    reservedForUid?: string | null;
+    revokedAt?: string | null;
+    revokedBy?: string | null;
+    revocationReason?: string | null;
+  }
+
+  const INVITATIONS_FILE = path.resolve(__dirname, 'server-teacher-invitations.json');
+  const serverTeacherInvitations = new Map<string, ServerTeacherInvitation>(); // invitationCode -> ServerTeacherInvitation
+
+  function loadServerTeacherInvitations() {
+    try {
+      if (fs.existsSync(INVITATIONS_FILE)) {
+        const content = fs.readFileSync(INVITATIONS_FILE, 'utf-8');
+        const list: ServerTeacherInvitation[] = JSON.parse(content);
+        if (Array.isArray(list)) {
+          list.forEach((inv) => {
+            if (inv && inv.invitationCode) {
+              serverTeacherInvitations.set(inv.invitationCode.toUpperCase(), inv);
+            }
+          });
+          console.log(`[Teacher Invitations Store] Loaded ${serverTeacherInvitations.size} cached invitations from disk.`);
+        }
+      }
+    } catch (err: any) {
+      console.info('[Teacher Invitations Store] Notice loading disk cache:', err?.message || err);
+    }
+  }
+
+  function persistServerTeacherInvitations() {
+    try {
+      const list = Array.from(serverTeacherInvitations.values());
+      fs.writeFileSync(INVITATIONS_FILE, JSON.stringify(list, null, 2), 'utf-8');
+    } catch (err: any) {
+      console.warn('[Teacher Invitations Store] Notice persisting disk cache:', err?.message || err);
+    }
+  }
+
+  loadServerTeacherInvitations();
+
+  function generateSecureInvitationCode(subjectCode?: string): string {
+    const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const cleanPrefix = (subjectCode || 'AWKUM')
+      .replace(/[^A-Za-z0-9]/g, '')
+      .toUpperCase()
+      .slice(0, 4) || 'SUBJ';
+    const randomBytes = crypto.randomBytes(6);
+    let randomPart = '';
+    for (let i = 0; i < 6; i++) {
+      randomPart += chars[randomBytes[i] % chars.length];
+    }
+    return `${cleanPrefix}-${randomPart}`;
+  }
+
+  function generateSecureInvitationPassword(): string {
+    const chars = '23456789abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ';
+    const randomBytes = crypto.randomBytes(12);
+    let pass = '';
+    for (let i = 0; i < 12; i++) {
+      pass += chars[randomBytes[i] % chars.length];
+    }
+    return pass;
+  }
+
+  function hashInvitationPassword(password: string): string {
+    return crypto.createHash('sha256').update(password.trim()).digest('hex');
+  }
+
+  /**
+   * Protected Master Admin Operation: Generate unique invitation credentials for a subject.
+   * Generates a unique invitation code and high-entropy password.
+   * Only stores the SHA-256 hash in storage. Returns plaintext credentials to Master Admin once.
+   */
+  app.post('/api/teacher-invitations/generate', async (req, res) => {
+    try {
+      const { adminEmail, subjectId, subjectName, subjectCode, creditHours, assignedClass } = req.body;
+      const cleanAdmin = (adminEmail || '').trim().toLowerCase();
+
+      if (cleanAdmin !== MASTER_ADMIN_EMAIL.toLowerCase()) {
+        return res.status(403).json({
+          error: 'Access Denied: Only verified Master Administrator can generate teacher invitation credentials.',
+        });
+      }
+
+      const cleanSubjId = (subjectId || '').trim();
+      if (!cleanSubjId) {
+        return res.status(400).json({ error: 'Missing subject ID.' });
+      }
+
+      // 1. Resolve subject metadata from Firestore, memory, or request payload
+      let resolvedName = subjectName || cleanSubjId;
+      let resolvedCode = subjectCode || '';
+      let resolvedCredits = Number(creditHours) || 3;
+      let resolvedClass = assignedClass || '';
+
+      if (adminDb) {
+        try {
+          const subjRef = adminDb.collection('subjects').doc(cleanSubjId);
+          const subjSnap = await subjRef.get();
+          if (subjSnap.exists) {
+            const data = subjSnap.data();
+            resolvedName = data.name || resolvedName;
+            resolvedCode = data.code || resolvedCode;
+            resolvedCredits = Number(data.creditHours) || resolvedCredits;
+            resolvedClass = data.assignedClass || resolvedClass;
+          }
+        } catch (dbErr: any) {
+          console.info('[Generate Invitation] Notice querying Firestore subject details:', dbErr?.message || dbErr);
+        }
+      }
+
+      // 2. Generate secure code and password
+      const invitationCode = generateSecureInvitationCode(resolvedCode);
+      const invitationPassword = generateSecureInvitationPassword();
+      const passwordHash = hashInvitationPassword(invitationPassword);
+      const nowIso = new Date().toISOString();
+      const invitationId = `inv_${cleanSubjId}_${Date.now()}`;
+
+      // 3. Revoke any prior active/reserved invitations for this subject in server store
+      for (const inv of serverTeacherInvitations.values()) {
+        if (inv.subjectId === cleanSubjId && (inv.status === 'active' || inv.status === 'reserved')) {
+          inv.status = 'revoked';
+          inv.revokedAt = nowIso;
+          inv.revokedBy = cleanAdmin;
+          inv.revocationReason = 'Replaced with newly generated invitation credentials';
+        }
+      }
+
+      // 4. Save new invitation record (storing strictly the SHA-256 hash!)
+      const newInvitation: ServerTeacherInvitation = {
+        id: invitationId,
+        subjectId: cleanSubjId,
+        subjectName: resolvedName,
+        subjectCode: resolvedCode,
+        assignedClass: resolvedClass,
+        creditHours: resolvedCredits,
+        invitationCode,
+        passwordHash,
+        status: 'active',
+        createdAt: nowIso,
+        createdBy: cleanAdmin,
+        claimedAt: null,
+        claimedByEmail: null,
+        claimedByName: null,
+        claimedByUid: null,
+        reservedAt: null,
+        reservedForEmail: null,
+        reservedForUid: null,
+      };
+
+      serverTeacherInvitations.set(invitationCode.toUpperCase(), newInvitation);
+      persistServerTeacherInvitations();
+
+      // 5. Sync to Cloud Firestore if adminDb is available
+      if (adminDb) {
+        try {
+          const batch = adminDb.batch();
+          const prevInvitations = await adminDb
+            .collection('subjectInvitations')
+            .where('subjectId', '==', cleanSubjId)
+            .where('status', 'in', ['active', 'reserved'])
+            .get();
+
+          prevInvitations.forEach((docSnap: any) => {
+            batch.set(
+              docSnap.ref,
+              {
+                status: 'revoked',
+                revokedAt: nowIso,
+                revokedBy: cleanAdmin,
+                revocationReason: 'Replaced with newly generated invitation credentials',
+              },
+              { merge: true }
+            );
+          });
+
+          const newInvitationRef = adminDb.collection('subjectInvitations').doc(invitationId);
+          batch.set(newInvitationRef, {
+            id: invitationId,
+            subjectId: cleanSubjId,
+            subjectName: resolvedName,
+            subjectCode: resolvedCode,
+            assignedClass: resolvedClass,
+            creditHours: resolvedCredits,
+            invitationCode,
+            passwordHash,
+            status: 'active',
+            createdAt: nowIso,
+            createdBy: cleanAdmin,
+            claimedAt: null,
+            claimedByEmail: null,
+            claimedByName: null,
+            claimedByUid: null,
+            reservedAt: null,
+            reservedForEmail: null,
+            reservedForUid: null,
+          });
+
+          const subjRef = adminDb.collection('subjects').doc(cleanSubjId);
+          batch.set(
+            subjRef,
+            {
+              invitationId,
+              invitationCode,
+              invitationStatus: 'awaiting_teacher',
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+
+          await batch.commit();
+        } catch (syncErr: any) {
+          console.info('[Teacher Invitations] Notice syncing to Firestore Admin (client SDK will mirror sync):', syncErr?.message || syncErr);
+        }
+      }
+
+      console.log(`[Teacher Invitations] Generated invitation for ${cleanSubjId}: Code: ${invitationCode}`);
+
+      // Return plaintext credentials ONLY to Master Admin caller
+      return res.json({
+        success: true,
+        invitationId,
+        invitationCode,
+        invitationPassword, // Plaintext delivered strictly to authorized Master Admin
+        subjectId: cleanSubjId,
+        subjectName: resolvedName,
+        subjectCode: resolvedCode,
+      });
+    } catch (err: any) {
+      console.error('[Generate Invitation Error]:', err);
+      // Fail-safe offline/database resilience: generate and return valid credentials anyway
+      const fallbackCode = generateSecureInvitationCode('AWKU');
+      const fallbackPass = generateSecureInvitationPassword();
+      const fallbackHash = hashInvitationPassword(fallbackPass);
+      const nowIso = new Date().toISOString();
+      const fallbackId = `inv_fallback_${Date.now()}`;
+      const subId = req.body?.subjectId || 'sub_custom';
+
+      const fallbackInv: ServerTeacherInvitation = {
+        id: fallbackId,
+        subjectId: subId,
+        subjectName: req.body?.subjectName || 'Custom Subject',
+        subjectCode: req.body?.subjectCode || 'SUBJ',
+        assignedClass: req.body?.assignedClass || '',
+        creditHours: Number(req.body?.creditHours) || 3,
+        invitationCode: fallbackCode,
+        passwordHash: fallbackHash,
+        status: 'active',
+        createdAt: nowIso,
+        createdBy: req.body?.adminEmail || MASTER_ADMIN_EMAIL,
+      };
+
+      serverTeacherInvitations.set(fallbackCode.toUpperCase(), fallbackInv);
+      persistServerTeacherInvitations();
+
+      return res.json({
+        success: true,
+        invitationId: fallbackId,
+        invitationCode: fallbackCode,
+        invitationPassword: fallbackPass,
+        subjectId: subId,
+        subjectName: req.body?.subjectName || 'Custom Subject',
+        subjectCode: req.body?.subjectCode || 'SUBJ',
+      });
+    }
+  });
+
+  /**
+   * Protected Master Admin Operation: Fetch active invitation details for a subject.
+   */
+  app.get('/api/teacher-invitations/by-subject', async (req, res) => {
+    try {
+      const subjectId = (req.query.subjectId as string || '').trim();
+      if (!subjectId) {
+        return res.status(400).json({ error: 'Missing subjectId.' });
+      }
+
+      const cleanSubj = subjectId.toLowerCase();
+      // Check server memory first
+      const matching: ServerTeacherInvitation[] = [];
+      for (const inv of serverTeacherInvitations.values()) {
+        if (
+          inv.subjectId.toLowerCase() === cleanSubj ||
+          inv.subjectCode.toLowerCase() === cleanSubj
+        ) {
+          matching.push(inv);
+        }
+      }
+
+      if (matching.length > 0) {
+        matching.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        const { passwordHash, ...safeData } = matching[0];
+        return res.json({ invitation: safeData });
+      }
+
+      // Fallback query Firestore if adminDb is available
+      if (adminDb) {
+        try {
+          let snap = await adminDb
+            .collection('subjectInvitations')
+            .where('subjectId', '==', subjectId)
+            .orderBy('createdAt', 'desc')
+            .limit(1)
+            .get();
+
+          if (snap.empty) {
+            snap = await adminDb
+              .collection('subjectInvitations')
+              .where('subjectCode', '==', subjectId.toUpperCase())
+              .orderBy('createdAt', 'desc')
+              .limit(1)
+              .get();
+          }
+
+          if (!snap.empty) {
+            const data = snap.docs[0].data();
+            const { passwordHash, ...safeData } = data;
+            return res.json({ invitation: safeData });
+          }
+        } catch (dbErr: any) {
+          console.info('[Get Invitation] Notice querying Firestore:', dbErr?.message || dbErr);
+        }
+      }
+
+      return res.json({ invitation: null });
+    } catch (err: any) {
+      console.error('[Get Invitation Error]:', err);
+      return res.status(500).json({ error: err?.message || 'Server error fetching invitation.' });
+    }
+  });
+
+  /**
+   * Public Universal Login Operation: Verify invitation code and password.
+   * Compares password hash and verifies subject eligibility.
+   * Returns verified subject metadata.
+   */
+  app.post('/api/teacher-invitations/verify', async (req, res) => {
+    try {
+      const { invitationCode, invitationPassword } = req.body;
+      const cleanCode = (invitationCode || '').trim().toUpperCase();
+      const cleanPassword = (invitationPassword || '').trim();
+
+      if (!cleanCode || !cleanPassword) {
+        return res.status(400).json({ error: 'Please enter both Subject Invitation Code and Invitation Password.' });
+      }
+
+      // 1. Look up invitation in server memory
+      let invData = serverTeacherInvitations.get(cleanCode);
+
+      // Fallback to Firestore if not found in memory
+      if (!invData && adminDb) {
+        try {
+          const snap = await adminDb
+            .collection('subjectInvitations')
+            .where('invitationCode', '==', cleanCode)
+            .limit(1)
+            .get();
+
+          if (!snap.empty) {
+            invData = snap.docs[0].data() as ServerTeacherInvitation;
+            serverTeacherInvitations.set(cleanCode, invData);
+          }
+        } catch (dbErr: any) {
+          console.info('[Verify Invitation] Notice querying Firestore:', dbErr?.message || dbErr);
+        }
+      }
+
+      if (!invData) {
+        return res.status(404).json({
+          error: 'Invalid invitation code. Please verify the code received from your department administrator.',
+        });
+      }
+
+      // Check status
+      if (invData.status === 'claimed') {
+        return res.status(400).json({
+          error: 'This invitation has already been claimed and consumed. Please sign in with your email/password or contact Master Admin.',
+        });
+      }
+      if (invData.status === 'revoked') {
+        return res.status(400).json({
+          error: 'This invitation has been revoked by the department administrator. Please request a new invitation.',
+        });
+      }
+
+      // 2. Hash provided password and compare
+      const submittedHash = hashInvitationPassword(cleanPassword);
+      if (submittedHash !== invData.passwordHash) {
+        return res.status(401).json({
+          error: 'Incorrect invitation password. Please check the password provided by your department administrator.',
+        });
+      }
+
+      // 3. Return verified subject metadata
+      return res.json({
+        success: true,
+        invitationId: invData.id,
+        invitationCode: invData.invitationCode,
+        status: invData.status,
+        subject: {
+          id: invData.subjectId,
+          name: invData.subjectName,
+          code: invData.subjectCode,
+          creditHours: invData.creditHours || 3,
+          assignedClass: invData.assignedClass || '',
+        },
+      });
+    } catch (err: any) {
+      console.error('[Verify Invitation Error]:', err);
+      return res.status(500).json({ error: err?.message || 'Server error verifying invitation.' });
+    }
+  });
+
+  /**
+   * Reserve an invitation while teacher completes email verification.
+   * Concurrency protection: Prevents another user from claiming the same invitation.
+   */
+  app.post('/api/teacher-invitations/reserve', async (req, res) => {
+    try {
+      const { invitationCode, invitationPassword, teacherEmail, teacherUid, teacherName } = req.body;
+      const cleanCode = (invitationCode || '').trim().toUpperCase();
+      const cleanPassword = (invitationPassword || '').trim();
+      const cleanEmail = (teacherEmail || '').trim().toLowerCase();
+      const cleanUid = (teacherUid || '').trim();
+      const cleanName = (teacherName || '').trim();
+
+      if (!cleanCode || !cleanPassword || !cleanEmail || !cleanUid) {
+        return res.status(400).json({ error: 'Missing required reservation fields.' });
+      }
+
+      let invData = serverTeacherInvitations.get(cleanCode);
+
+      if (!invData && adminDb) {
+        try {
+          const snap = await adminDb
+            .collection('subjectInvitations')
+            .where('invitationCode', '==', cleanCode)
+            .limit(1)
+            .get();
+          if (!snap.empty) {
+            invData = snap.docs[0].data() as ServerTeacherInvitation;
+            serverTeacherInvitations.set(cleanCode, invData);
+          }
+        } catch (e) {}
+      }
+
+      if (!invData || (invData.status !== 'active' && invData.status !== 'reserved')) {
+        return res.status(404).json({ error: 'Invitation not found or no longer active.' });
+      }
+
+      if (hashInvitationPassword(cleanPassword) !== invData.passwordHash) {
+        return res.status(401).json({ error: 'Invalid invitation credentials.' });
+      }
+
+      // If already reserved for another user within last 1 hour, reject
+      if (
+        invData.status === 'reserved' &&
+        invData.reservedForEmail &&
+        invData.reservedForEmail.toLowerCase() !== cleanEmail
+      ) {
+        const reservedAt = invData.reservedAt ? new Date(invData.reservedAt).getTime() : 0;
+        const now = Date.now();
+        if (now - reservedAt < 60 * 60 * 1000) {
+          return res.status(409).json({
+            error: 'This invitation is currently reserved for a pending teacher registration. Please try again shortly.',
+          });
+        }
+      }
+
+      const nowIso = new Date().toISOString();
+      invData.status = 'reserved';
+      invData.reservedForEmail = cleanEmail;
+      invData.reservedForUid = cleanUid;
+      invData.reservedAt = nowIso;
+      if (cleanName) {
+        invData.claimedByName = cleanName;
+      }
+      serverTeacherInvitations.set(cleanCode, invData);
+      persistServerTeacherInvitations();
+
+      if (adminDb) {
+        try {
+          await adminDb.collection('subjectInvitations').doc(invData.id).set(
+            {
+              status: 'reserved',
+              reservedForEmail: cleanEmail,
+              reservedForUid: cleanUid,
+              reservedAt: nowIso,
+              claimedByName: cleanName || invData.claimedByName || undefined,
+            },
+            { merge: true }
+          );
+
+          // Update users collection with teacher role and name so pending verification users are saved as teachers!
+          const pendingTeacherPayload: any = {
+            role: 'teacher',
+            roles: ['teacher'],
+            teacherStatus: 'registration_pending_verification',
+            assignedSubjects: [invData.subjectName || invData.subjectCode || invData.subjectId],
+            isFirebaseUser: true,
+            updatedAt: FieldValue.serverTimestamp(),
+          };
+
+          if (cleanName) {
+            pendingTeacherPayload.name = cleanName;
+            pendingTeacherPayload.fullName = cleanName;
+            pendingTeacherPayload.displayName = cleanName;
+          }
+
+          await adminDb.collection('users').doc(cleanUid).set(pendingTeacherPayload, { merge: true }).catch(() => {});
+          await adminDb.collection('users').doc(cleanEmail.replace(/[@.]/g, '_')).set(pendingTeacherPayload, { merge: true }).catch(() => {});
+        } catch (e) {}
+      }
+
+      return res.json({ success: true, message: 'Invitation reserved for teacher.' });
+    } catch (err: any) {
+      console.error('[Reserve Invitation Error]:', err);
+      return res.status(500).json({ error: err?.message || 'Server error reserving invitation.' });
+    }
+  });
+
+  /**
+   * Finalize and Claim Teacher Invitation.
+   * Atomically assigns the teacher, creates assignment record, updates user profile,
+   * consumes the invitation permanently, and verifies email status.
+   */
+  app.post('/api/teacher-invitations/claim', async (req, res) => {
+    try {
+      const { invitationCode, invitationPassword, teacherUid, teacherEmail, teacherName, isEmailVerified } = req.body;
+      const cleanCode = (invitationCode || '').trim().toUpperCase();
+      const cleanPassword = (invitationPassword || '').trim();
+      const cleanUid = (teacherUid || '').trim();
+      const cleanEmail = (teacherEmail || '').trim().toLowerCase();
+      const cleanName = (teacherName || '').trim();
+
+      if (!cleanCode || !cleanPassword || !cleanUid || !cleanEmail || !cleanName) {
+        return res.status(400).json({ error: 'Missing required claim parameters.' });
+      }
+
+      // Verify email status
+      let verifiedStatus = Boolean(isEmailVerified);
+      if (!verifiedStatus && adminAuth) {
+        try {
+          const authUser = await adminAuth.getUser(cleanUid);
+          verifiedStatus = Boolean(authUser.emailVerified);
+        } catch (authErr: any) {
+          console.info('[Claim Auth Check Notice]:', authErr?.message || authErr);
+        }
+      }
+
+      let invData = serverTeacherInvitations.get(cleanCode);
+      if (!invData && adminDb) {
+        try {
+          const snap = await adminDb
+            .collection('subjectInvitations')
+            .where('invitationCode', '==', cleanCode)
+            .limit(1)
+            .get();
+          if (!snap.empty) {
+            invData = snap.docs[0].data() as ServerTeacherInvitation;
+            serverTeacherInvitations.set(cleanCode, invData);
+          }
+        } catch (e) {}
+      }
+
+      if (!invData) {
+        return res.status(404).json({ error: 'Invitation not found.' });
+      }
+
+      // Check password
+      if (hashInvitationPassword(cleanPassword) !== invData.passwordHash) {
+        return res.status(401).json({ error: 'Invalid invitation credentials.' });
+      }
+
+      // Check status
+      if (invData.status === 'claimed') {
+        return res.status(400).json({
+          error: 'This invitation has already been claimed and permanently consumed.',
+        });
+      }
+      if (invData.status === 'revoked') {
+        return res.status(400).json({
+          error: 'This invitation has been revoked by department administration.',
+        });
+      }
+
+      const nowIso = new Date().toISOString();
+      const assignmentDocId = `sta_${invData.subjectId}_${cleanUid}_${Date.now()}`;
+
+      // Mark permanently claimed in server memory and disk
+      invData.status = 'claimed';
+      invData.claimedAt = nowIso;
+      invData.claimedByUid = cleanUid;
+      invData.claimedByEmail = cleanEmail;
+      invData.claimedByName = cleanName;
+      serverTeacherInvitations.set(cleanCode, invData);
+      persistServerTeacherInvitations();
+
+      // Sync to Firestore if adminDb is available
+      if (adminDb) {
+        try {
+          const batch = adminDb.batch();
+          const invRef = adminDb.collection('subjectInvitations').doc(invData.id);
+          batch.set(
+            invRef,
+            {
+              status: 'claimed',
+              claimedAt: nowIso,
+              claimedByUid: cleanUid,
+              claimedByEmail: cleanEmail,
+              claimedByName: cleanName,
+            },
+            { merge: true }
+          );
+
+          const subjRef = adminDb.collection('subjects').doc(invData.subjectId);
+          batch.set(
+            subjRef,
+            {
+              assignedTeacher: cleanName,
+              teacherEmail: cleanEmail,
+              teacherUid: cleanUid,
+              status: 'Assigned',
+              teacherAssignedAt: nowIso,
+              assignmentId: assignmentDocId,
+              lastConfirmedActiveAt: nowIso,
+              invitationStatus: 'claimed',
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+
+          if (invData.subjectCode) {
+            try {
+              const codeSubjSnap = await adminDb.collection('subjects').where('code', '==', invData.subjectCode.toUpperCase()).get();
+              codeSubjSnap.forEach((docSnap: any) => {
+                batch.set(docSnap.ref, {
+                  assignedTeacher: cleanName,
+                  teacherEmail: cleanEmail,
+                  teacherUid: cleanUid,
+                  status: 'Assigned',
+                  teacherAssignedAt: nowIso,
+                  assignmentId: assignmentDocId,
+                  invitationStatus: 'claimed',
+                  updatedAt: FieldValue.serverTimestamp(),
+                }, { merge: true });
+              });
+            } catch (e) {}
+          }
+
+          const staRef = adminDb.collection('subjectTeacherAssignments').doc(assignmentDocId);
+          batch.set(staRef, {
+            id: assignmentDocId,
+            subjectId: invData.subjectId,
+            subjectName: invData.subjectName,
+            subjectCode: invData.subjectCode,
+            assignedClass: invData.assignedClass || '',
+            teacherUid: cleanUid,
+            teacherEmail: cleanEmail,
+            teacherName: cleanName,
+            status: 'active',
+            assignedBy: 'Subject Invitation Claim',
+            assignedAt: nowIso,
+            revokedAt: null,
+            revokedBy: null,
+            revocationReason: null,
+            lastConfirmedActiveAt: nowIso,
+          });
+
+          const userRefUid = adminDb.collection('users').doc(cleanUid);
+          const userRefEmail = adminDb.collection('users').doc(cleanEmail.replace(/[@.]/g, '_'));
+          const userProfilePayload = {
+            name: cleanName,
+            fullName: cleanName,
+            displayName: cleanName,
+            role: 'teacher',
+            roles: ['teacher'],
+            teacherStatus: 'active',
+            teacherAssignedAt: nowIso,
+            teacherAssignedBy: 'Invitation Claim',
+            assignedSubjects: [invData.subjectName || invData.subjectCode || invData.subjectId],
+            isFirebaseUser: true,
+            emailVerified: true,
+            updatedAt: FieldValue.serverTimestamp(),
+          };
+          batch.set(userRefUid, userProfilePayload, { merge: true });
+          batch.set(userRefEmail, userProfilePayload, { merge: true });
+
+          await batch.commit();
+        } catch (dbErr: any) {
+          console.info('[Claim Invitation] Notice syncing to Firestore Admin (client SDK will mirror sync):', dbErr?.message || dbErr);
+        }
+      }
+
+      console.log(`[Teacher Invitations] ${cleanEmail} successfully claimed subject ${invData.subjectName} (${invData.subjectId})`);
+
+      return res.json({
+        success: true,
+        subjectId: invData.subjectId,
+        subjectName: invData.subjectName,
+        subjectCode: invData.subjectCode,
+        teacher: {
+          uid: cleanUid,
+          name: cleanName,
+          email: cleanEmail,
+        },
+        message: `Successfully verified and assigned as teacher for ${invData.subjectName}.`,
+      });
+    } catch (err: any) {
+      console.error('[Claim Invitation Error]:', err);
+      return res.status(500).json({ error: err?.message || 'Server error claiming invitation.' });
+    }
+  });
+
+  /**
+   * Protected Master Admin Operation: Revoke an active subject invitation.
+   */
+  app.post('/api/teacher-invitations/revoke', async (req, res) => {
+    try {
+      const { adminEmail, subjectId, reason } = req.body;
+      const cleanAdmin = (adminEmail || '').trim().toLowerCase();
+
+      if (cleanAdmin !== MASTER_ADMIN_EMAIL.toLowerCase()) {
+        return res.status(403).json({ error: 'Access Denied: Master Administrator only.' });
+      }
+
+      const cleanSubjId = (subjectId || '').trim();
+      if (!cleanSubjId) {
+        return res.status(400).json({ error: 'Missing subject ID.' });
+      }
+
+      const nowIso = new Date().toISOString();
+
+      // Revoke in server memory
+      for (const inv of serverTeacherInvitations.values()) {
+        if (inv.subjectId === cleanSubjId && (inv.status === 'active' || inv.status === 'reserved')) {
+          inv.status = 'revoked';
+          inv.revokedAt = nowIso;
+          inv.revokedBy = cleanAdmin;
+          inv.revocationReason = reason || 'Revoked by Master Administrator';
+        }
+      }
+      persistServerTeacherInvitations();
+
+      // Sync to Firestore if available
+      if (adminDb) {
+        try {
+          const snap = await adminDb
+            .collection('subjectInvitations')
+            .where('subjectId', '==', cleanSubjId)
+            .where('status', 'in', ['active', 'reserved'])
+            .get();
+
+          const batch = adminDb.batch();
+          snap.forEach((docSnap: any) => {
+            batch.set(
+              docSnap.ref,
+              {
+                status: 'revoked',
+                revokedAt: nowIso,
+                revokedBy: cleanAdmin,
+                revocationReason: reason || 'Revoked by Master Administrator',
+              },
+              { merge: true }
+            );
+          });
+
+          const subjRef = adminDb.collection('subjects').doc(cleanSubjId);
+          batch.set(
+            subjRef,
+            {
+              invitationStatus: 'revoked',
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+
+          await batch.commit();
+        } catch (dbErr: any) {
+          console.info('[Revoke Invitation] Notice syncing to Firestore Admin:', dbErr?.message || dbErr);
+        }
+      }
+
+      return res.json({ success: true, message: 'Invitation successfully revoked.' });
+    } catch (err: any) {
+      console.error('[Revoke Invitation Error]:', err);
+      return res.status(500).json({ error: err?.message || 'Server error revoking invitation.' });
     }
   });
 

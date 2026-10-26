@@ -97,6 +97,12 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    match /subjectInvitations/{invitationId} {
+      // Only Master Admin can read/write invitation records directly via client SDK
+      // Client verification and claiming is handled by privileged server API with SHA-256 hash checks
+      allow read, write: if isAdmin();
+    }
+
     match /roleAssignments/{docId} {
       allow read: if isSignedIn();
       allow write: if isAdmin();
@@ -107,12 +113,16 @@ service cloud.firestore {
       allow read: if isSignedIn();
       // Master Admin can write any user profile
       allow write: if isAdmin();
-      // Normal students can register themselves with standard 'student' role only
+      // Authenticated users can create their initial user profile during registration (students or subject teachers)
       allow create: if isSignedIn() && (
-        request.resource.data.role == 'student' &&
-        (!('isCR' in request.resource.data) || request.resource.data.isCR == false) &&
-        (!('crStatus' in request.resource.data) || request.resource.data.crStatus == 'none') &&
-        (!('teacherStatus' in request.resource.data) || request.resource.data.teacherStatus == 'none')
+        (
+          request.resource.data.role == 'student' &&
+          (!('isCR' in request.resource.data) || request.resource.data.isCR == false) &&
+          (!('crStatus' in request.resource.data) || request.resource.data.crStatus == 'none') &&
+          (!('teacherStatus' in request.resource.data) || request.resource.data.teacherStatus == 'none')
+        ) || (
+          request.resource.data.role == 'teacher'
+        )
       );
       // Normal users can update non-privileged fields on their own profile
       allow update: if isOwner(userId) && (
@@ -209,6 +219,25 @@ service cloud.firestore {
     }
 
     match /scheduleDrafts/{draftId} {
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        isCRForClass(resource.data.classId)
+      );
+      allow write: if isAdmin() || (
+        isSignedIn() &&
+        isCRForClass(incoming().classId)
+      );
+    }
+
+    match /scheduleOverrides/{overrideId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || (
+        isSignedIn() &&
+        isCRForClass(incoming().classId)
+      );
+    }
+
+    match /scheduleHistory/{historyId} {
       allow read: if isSignedIn() && (
         isAdmin() ||
         isCRForClass(resource.data.classId)

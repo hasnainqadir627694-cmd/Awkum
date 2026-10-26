@@ -31,32 +31,17 @@ try {
   app = getApps().length === 0 ? initializeApp(FIREBASE_CONFIG) : getApp();
   auth = getAuth(app);
 
-  // Initialize Firestore with force long polling & offline persistent cache
-  // experimentalForceLongPolling eliminates the 10-second backend streaming timeout
-  // behind Cloud Run, iframes, reverse proxies, and restrictive networks.
   try {
     db = initializeFirestore(app, {
       experimentalForceLongPolling: true,
-      localCache: persistentLocalCache({
-        tabManager: persistentMultipleTabManager(),
-      }),
+      ignoreUndefinedProperties: true,
+      localCache: memoryLocalCache(),
     });
   } catch (initErr: any) {
-    if (initErr?.code === 'failed-precondition' || initErr?.message?.includes('already been called')) {
-      db = getFirestore(app);
-    } else {
-      try {
-        db = initializeFirestore(app, {
-          experimentalForceLongPolling: true,
-          localCache: memoryLocalCache(),
-        });
-      } catch {
-        db = getFirestore(app);
-      }
-    }
+    db = getFirestore(app);
   }
 } catch (err) {
-  console.error('[Firebase] Error initializing Firebase services:', err);
+  console.info('[Firebase] Notice initializing Firebase services:', err);
   app = getApps()[0] || initializeApp(FIREBASE_CONFIG);
   auth = getAuth(app);
   db = getFirestore(app);

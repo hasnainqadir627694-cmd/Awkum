@@ -340,11 +340,13 @@ export const TeacherLayout: React.FC<TeacherLayoutProps> = ({
                 title="View Teacher Profile"
               >
                 <div className="w-8 h-8 rounded-full bg-[#493222] text-[#FFF9F1] font-bold text-xs flex items-center justify-center border border-[#D8C7B4]">
-                  {currentUser.name ? currentUser.name.charAt(0) : 'T'}
+                  {(currentUser.name && !currentUser.name.includes('@') ? currentUser.name : 'T').charAt(0).toUpperCase()}
                 </div>
                 <div className="hidden sm:flex flex-col text-right leading-tight">
                   <span className="font-bold text-xs text-[#38271C]">
-                    {currentUser.name ? currentUser.name.split(' ')[0] : 'Teacher'}
+                    {(currentUser.name && !currentUser.name.includes('@')
+                      ? currentUser.name
+                      : currentUser.email ? currentUser.email.split('@')[0].replace(/[._-]/g, ' ').replace(/\d+/g, '').trim().replace(/\b\w/g, (c) => c.toUpperCase()) : 'Teacher').split(' ')[0]}
                   </span>
                   <span className="text-[9px] text-[#668064] font-semibold">Faculty</span>
                 </div>

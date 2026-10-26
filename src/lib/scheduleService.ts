@@ -3,46 +3,43 @@ import {
   doc,
   setDoc,
   getDoc,
+  deleteDoc,
+  collection,
+  query,
+  where,
+  getDocs,
   onSnapshot,
   serverTimestamp,
 } from 'firebase/firestore';
 import { recordAuditLog } from './authService';
+import {
+  RecurringSchedule,
+  RecurringScheduleEntry,
+  ScheduleOverrideItem,
+  WeekdayCode,
+  WEEKDAYS_ORDER,
+} from './scheduleEngine';
 
-export interface SchedulePeriodItem {
-  id: string;
-  day: 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun';
-  periodIndex: number;
-  periodLabel: string; // e.g. "09:00 AM - 10:25 AM"
-  startTime: string;   // e.g. "09:00 AM"
-  endTime: string;     // e.g. "10:25 AM"
-  subjectId: string;   // canonical subject ID if matched, or raw string
-  subjectCode: string; // e.g. "CS100"
-  subjectName: string; // e.g. "Programming Fundamentals"
-  teacherName?: string;
-  room?: string;
-  isMatched: boolean;
-  matchWarning?: string;
-}
+// Backward-compatible interface alias for existing callers
+export type WeeklySchedule = RecurringSchedule;
+export type SchedulePeriodItem = RecurringScheduleEntry;
 
-export interface WeeklySchedule {
+export interface ScheduleHistoryRecord {
   id: string;
+  scheduleId: string;
   classId: string;
-  semester?: string;
-  effectiveWeek?: string;
-  status: 'draft' | 'published';
-  publishedVersion: number;
-  publishedAt?: string;
-  publishedBy?: {
+  version: number;
+  startDate: string;
+  endDate: string;
+  publishedAt: string;
+  publishedBy: {
     uid: string;
     email: string;
     name: string;
   };
-  sourceImageUrl?: string;
-  items: SchedulePeriodItem[];
-  days: string[];
-  warnings: string[];
-  createdAt: string;
-  updatedAt: string;
+  items: RecurringScheduleEntry[];
+  activeDays: WeekdayCode[];
+  totalClasses: number;
 }
 
 function cleanClassId(classId: string): string {
@@ -66,11 +63,22 @@ function sanitizePayload(obj: any): any {
 }
 
 /**
- * Subscribes in real time to the official published schedule for a specific class/section
+ * Extracts distinct active weekdays that have at least one scheduled class.
+ */
+export function extractActiveWeekdays(items: RecurringScheduleEntry[]): WeekdayCode[] {
+  const set = new Set<WeekdayCode>();
+  for (const item of items) {
+    if (item.day) set.add(item.day);
+  }
+  return WEEKDAYS_ORDER.filter((d) => set.has(d));
+}
+
+/**
+ * Subscribes in real time to the official published recurring schedule for a specific class/section
  */
 export function subscribeToPublishedSchedule(
   classId: string,
-  onUpdate: (schedule: WeeklySchedule | null) => void
+  onUpdate: (schedule: RecurringSchedule | null) => void
 ): () => void {
   const cleanId = cleanClassId(classId);
   const docRef = doc(db, 'schedules', `schedule_${cleanId}`);
@@ -82,19 +90,19 @@ export function subscribeToPublishedSchedule(
         if (snapshot.exists()) {
           const data = snapshot.data();
           if (data.status === 'published' && Array.isArray(data.items)) {
-            const schedule: WeeklySchedule = {
+            const schedule: RecurringSchedule = {
               id: snapshot.id,
               classId: data.classId || classId,
-              semester: data.semester || '',
-              effectiveWeek: data.effectiveWeek || '',
+              semester: data.semester || 'Fall 2026',
+              startDate: data.startDate || '2026-09-01',
+              endDate: data.endDate || '2027-01-31',
               status: 'published',
               publishedVersion: data.publishedVersion || 1,
               publishedAt: data.publishedAt || new Date().toISOString(),
               publishedBy: data.publishedBy || undefined,
-              sourceImageUrl: data.sourceImageUrl || '',
               items: data.items || [],
-              days: data.days || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
-              warnings: data.warnings || [],
+              activeDays: data.activeDays || extractActiveWeekdays(data.items || []),
+              notes: data.notes || '',
               createdAt: data.createdAt || new Date().toISOString(),
               updatedAt: data.updatedAt || new Date().toISOString(),
             };
@@ -119,9 +127,57 @@ export function subscribeToPublishedSchedule(
 }
 
 /**
+ * Subscribes in real time to date-specific overrides (cancellations and reschedules) for a class
+ */
+export function subscribeToScheduleOverrides(
+  classId: string,
+  onUpdate: (overrides: ScheduleOverrideItem[]) => void
+): () => void {
+  try {
+    const colRef = collection(db, 'scheduleOverrides');
+    const q = query(colRef, where('classId', '==', classId));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const overrides: ScheduleOverrideItem[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          overrides.push({
+            id: docSnap.id,
+            classId: data.classId,
+            date: data.date,
+            entryId: data.entryId,
+            type: data.type,
+            rescheduledStartTime: data.rescheduledStartTime,
+            rescheduledEndTime: data.rescheduledEndTime,
+            rescheduledRoom: data.rescheduledRoom,
+            rescheduledTeacher: data.rescheduledTeacher,
+            reason: data.reason,
+            createdAt: data.createdAt || new Date().toISOString(),
+            createdBy: data.createdBy,
+          });
+        });
+        onUpdate(overrides);
+      },
+      (err) => {
+        console.info('[Schedule Service] Overrides listener notice:', err.message);
+        onUpdate([]);
+      }
+    );
+
+    return unsubscribe;
+  } catch (err) {
+    console.info('[Schedule Service] Overrides subscription init notice:', err);
+    onUpdate([]);
+    return () => {};
+  }
+}
+
+/**
  * Fetches one-shot published schedule for a class
  */
-export async function getPublishedSchedule(classId: string): Promise<WeeklySchedule | null> {
+export async function getPublishedSchedule(classId: string): Promise<RecurringSchedule | null> {
   const cleanId = cleanClassId(classId);
   try {
     const docRef = doc(db, 'schedules', `schedule_${cleanId}`);
@@ -132,16 +188,16 @@ export async function getPublishedSchedule(classId: string): Promise<WeeklySched
         return {
           id: snap.id,
           classId: data.classId || classId,
-          semester: data.semester || '',
-          effectiveWeek: data.effectiveWeek || '',
+          semester: data.semester || 'Fall 2026',
+          startDate: data.startDate || '2026-09-01',
+          endDate: data.endDate || '2027-01-31',
           status: 'published',
           publishedVersion: data.publishedVersion || 1,
           publishedAt: data.publishedAt || new Date().toISOString(),
           publishedBy: data.publishedBy || undefined,
-          sourceImageUrl: data.sourceImageUrl || '',
           items: data.items || [],
-          days: data.days || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
-          warnings: data.warnings || [],
+          activeDays: data.activeDays || extractActiveWeekdays(data.items || []),
+          notes: data.notes || '',
           createdAt: data.createdAt || new Date().toISOString(),
           updatedAt: data.updatedAt || new Date().toISOString(),
         };
@@ -156,7 +212,7 @@ export async function getPublishedSchedule(classId: string): Promise<WeeklySched
 /**
  * Fetches current draft schedule for CR review
  */
-export async function getScheduleDraft(classId: string): Promise<WeeklySchedule | null> {
+export async function getScheduleDraft(classId: string): Promise<RecurringSchedule | null> {
   const cleanId = cleanClassId(classId);
   try {
     const docRef = doc(db, 'scheduleDrafts', `draft_${cleanId}`);
@@ -166,14 +222,14 @@ export async function getScheduleDraft(classId: string): Promise<WeeklySchedule 
       return {
         id: snap.id,
         classId: data.classId || classId,
-        semester: data.semester || '',
-        effectiveWeek: data.effectiveWeek || '',
+        semester: data.semester || 'Fall 2026',
+        startDate: data.startDate || '2026-09-01',
+        endDate: data.endDate || '2027-01-31',
         status: 'draft',
         publishedVersion: data.publishedVersion || 0,
-        sourceImageUrl: data.sourceImageUrl || '',
         items: data.items || [],
-        days: data.days || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
-        warnings: data.warnings || [],
+        activeDays: data.activeDays || extractActiveWeekdays(data.items || []),
+        notes: data.notes || '',
         createdAt: data.createdAt || new Date().toISOString(),
         updatedAt: data.updatedAt || new Date().toISOString(),
       };
@@ -185,19 +241,22 @@ export async function getScheduleDraft(classId: string): Promise<WeeklySchedule 
 }
 
 /**
- * Saves or updates a schedule draft in Firestore
+ * Saves or updates a recurring schedule draft in Firestore
  */
 export async function saveScheduleDraft(
-  draft: WeeklySchedule
+  draft: RecurringSchedule
 ): Promise<{ success: boolean; error?: string }> {
   const cleanId = cleanClassId(draft.classId);
   const docId = `draft_${cleanId}`;
 
   try {
+    const activeDays = extractActiveWeekdays(draft.items);
+
     const payload = sanitizePayload({
       ...draft,
       id: docId,
       status: 'draft',
+      activeDays,
       updatedAt: new Date().toISOString(),
       serverUpdatedAt: serverTimestamp(),
     });
@@ -211,11 +270,11 @@ export async function saveScheduleDraft(
 }
 
 /**
- * Confirms and publishes a verified weekly schedule for a class/section.
+ * Confirms and publishes a verified recurring weekly timetable for a class/section.
  * Immediately makes it authoritative for all students in real time.
  */
 export async function publishSchedule(
-  schedule: WeeklySchedule,
+  schedule: RecurringSchedule,
   crUser: { uid: string; email: string; name: string }
 ): Promise<{ success: boolean; version?: number; error?: string }> {
   const cleanId = cleanClassId(schedule.classId);
@@ -233,12 +292,14 @@ export async function publishSchedule(
     }
 
     const publishedAt = new Date().toISOString();
+    const activeDays = extractActiveWeekdays(schedule.items);
 
     const publishedPayload = sanitizePayload({
       id: scheduleDocId,
       classId: schedule.classId,
-      semester: schedule.semester || 'Spring 2026',
-      effectiveWeek: schedule.effectiveWeek || 'Current Semester',
+      semester: schedule.semester || 'Fall 2026',
+      startDate: schedule.startDate,
+      endDate: schedule.endDate,
       status: 'published',
       publishedVersion: newVersion,
       publishedAt,
@@ -247,10 +308,9 @@ export async function publishSchedule(
         email: crUser.email,
         name: crUser.name,
       },
-      sourceImageUrl: schedule.sourceImageUrl || '',
       items: schedule.items,
-      days: schedule.days,
-      warnings: schedule.warnings || [],
+      activeDays,
+      notes: schedule.notes || '',
       createdAt: schedule.createdAt || publishedAt,
       updatedAt: publishedAt,
       serverUpdatedAt: serverTimestamp(),
@@ -259,18 +319,46 @@ export async function publishSchedule(
     // 2. Persist authoritative published schedule document
     await setDoc(doc(db, 'schedules', scheduleDocId), publishedPayload);
 
-    // 3. Clear draft status or update draft to published
+    // 3. Archive version in scheduleHistory for rollbacks and auditability
+    const historyDocId = `${cleanId}_v${newVersion}`;
+    const historyPayload = sanitizePayload({
+      id: historyDocId,
+      scheduleId: scheduleDocId,
+      classId: schedule.classId,
+      version: newVersion,
+      startDate: schedule.startDate,
+      endDate: schedule.endDate,
+      publishedAt,
+      publishedBy: {
+        uid: crUser.uid,
+        email: crUser.email,
+        name: crUser.name,
+      },
+      items: schedule.items,
+      activeDays,
+      totalClasses: schedule.items.length,
+      serverCreatedAt: serverTimestamp(),
+    });
+    await setDoc(doc(db, 'scheduleHistory', historyDocId), historyPayload);
+
+    // 4. Update draft to reflect published version
     await setDoc(
       doc(db, 'scheduleDrafts', `draft_${cleanId}`),
-      { status: 'published', publishedVersion: newVersion, updatedAt: publishedAt },
+      {
+        status: 'published',
+        publishedVersion: newVersion,
+        updatedAt: publishedAt,
+        startDate: schedule.startDate,
+        endDate: schedule.endDate,
+      },
       { merge: true }
     );
 
-    // 4. Record audit log for security audit
+    // 5. Record audit log
     await recordAuditLog({
       action: 'Weekly Schedule Published',
       performedBy: crUser.email,
-      details: `Class Representative ${crUser.name} published Weekly Timetable v${newVersion} for ${schedule.classId} (${schedule.items.length} periods)`,
+      details: `CR ${crUser.name} published Weekly Timetable v${newVersion} for ${schedule.classId} (${schedule.items.length} classes across ${activeDays.length} days; Valid: ${schedule.startDate} to ${schedule.endDate})`,
       category: 'academic',
       status: 'success',
     });
@@ -280,4 +368,122 @@ export async function publishSchedule(
     console.error('[Schedule Service] Publish error:', err);
     return { success: false, error: err?.message || 'Failed to publish official schedule.' };
   }
+}
+
+/**
+ * Saves a date-specific override (class cancellation or rescheduling) without altering future weeks
+ */
+export async function saveScheduleOverride(
+  override: ScheduleOverrideItem
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const docId = override.id || `${cleanClassId(override.classId)}_${override.date}_${override.entryId}`;
+    const payload = sanitizePayload({
+      ...override,
+      id: docId,
+      updatedAt: new Date().toISOString(),
+      serverUpdatedAt: serverTimestamp(),
+    });
+
+    await setDoc(doc(db, 'scheduleOverrides', docId), payload);
+
+    await recordAuditLog({
+      action: override.type === 'cancelled' ? 'Schedule Exception: Class Cancelled' : 'Schedule Exception: Class Rescheduled',
+      performedBy: override.createdBy.email,
+      details: `CR ${override.createdBy.name} marked class ${override.entryId} on ${override.date} as ${override.type}. Reason: ${override.reason || 'None specified'}.`,
+      category: 'academic',
+      status: 'success',
+    });
+
+    return { success: true };
+  } catch (err: any) {
+    console.error('[Schedule Service] Save override error:', err);
+    return { success: false, error: err?.message || 'Failed to save date-specific schedule exception.' };
+  }
+}
+
+/**
+ * Removes a date-specific override, restoring the default recurring timetable for that date
+ */
+export async function deleteScheduleOverride(
+  overrideId: string,
+  userEmail: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await deleteDoc(doc(db, 'scheduleOverrides', overrideId));
+
+    await recordAuditLog({
+      action: 'Schedule Exception Removed',
+      performedBy: userEmail,
+      details: `Schedule override ${overrideId} removed, restoring default recurring schedule.`,
+      category: 'academic',
+      status: 'success',
+    });
+
+    return { success: true };
+  } catch (err: any) {
+    console.error('[Schedule Service] Delete override error:', err);
+    return { success: false, error: err?.message || 'Failed to delete schedule exception.' };
+  }
+}
+
+/**
+ * Retrieves the published version history for a class/section
+ */
+export async function getScheduleHistory(classId: string): Promise<ScheduleHistoryRecord[]> {
+  try {
+    const colRef = collection(db, 'scheduleHistory');
+    const q = query(colRef, where('classId', '==', classId));
+    const snap = await getDocs(q);
+
+    const history: ScheduleHistoryRecord[] = [];
+    snap.forEach((docSnap) => {
+      const data = docSnap.data();
+      history.push({
+        id: docSnap.id,
+        scheduleId: data.scheduleId,
+        classId: data.classId,
+        version: data.version || 1,
+        startDate: data.startDate || '',
+        endDate: data.endDate || '',
+        publishedAt: data.publishedAt || '',
+        publishedBy: data.publishedBy || { uid: '', email: '', name: 'System' },
+        items: data.items || [],
+        activeDays: data.activeDays || [],
+        totalClasses: data.totalClasses || (data.items?.length || 0),
+      });
+    });
+
+    // Sort descending by version
+    history.sort((a, b) => b.version - a.version);
+    return history;
+  } catch (err) {
+    console.info('[Schedule Service] Get history notice:', err);
+    return [];
+  }
+}
+
+/**
+ * Restores a historical schedule version and publishes it as the new active version
+ */
+export async function restoreScheduleVersion(
+  classId: string,
+  versionRecord: ScheduleHistoryRecord,
+  crUser: { uid: string; email: string; name: string }
+): Promise<{ success: boolean; error?: string }> {
+  const scheduleToRestore: RecurringSchedule = {
+    id: `schedule_${cleanClassId(classId)}`,
+    classId,
+    startDate: versionRecord.startDate,
+    endDate: versionRecord.endDate,
+    status: 'published',
+    publishedVersion: versionRecord.version,
+    items: versionRecord.items,
+    activeDays: versionRecord.activeDays,
+    notes: `Restored from version ${versionRecord.version}`,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  return publishSchedule(scheduleToRestore, crUser);
 }

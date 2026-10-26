@@ -180,11 +180,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
           setUsers((prev) =>
             prev
               .filter((u): u is AdminUser => Boolean(u && u.id))
-              .map((u) => {
-                if (u.id === userId) return res.user!;
-                if (res.previousCR && u.id === res.previousCR.id) return res.previousCR;
-                return u;
-              })
+              .map((u) => (u.id === userId ? res.user! : u))
           );
         }
       });

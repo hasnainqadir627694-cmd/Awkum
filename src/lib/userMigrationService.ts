@@ -52,81 +52,130 @@ export async function executeUserMigration(dryRun = true): Promise<MigrationAudi
     const usersSnap = await getDocs(collection(db, 'users'));
     result.totalScanned = usersSnap.docs.length;
 
-    const seenUids = new Set<string>();
-    const seenEmails = new Set<string>();
+    interface ScannedDoc {
+      docId: string;
+      data: any;
+      cleanEmail: string;
+      cleanUid: string;
+      isMasterAdmin: boolean;
+      hasAuthenticUid: boolean;
+    }
 
-    const legitimateDocs: { docId: string; data: any }[] = [];
-    const orphanDocs: { docId: string; data: any; reason: string }[] = [];
+    const scannedDocs: ScannedDoc[] = [];
 
     for (const docSnap of usersSnap.docs) {
       const docId = docSnap.id;
       const data = docSnap.data();
-      const email = (data.email || (docId.includes('_') ? docId.replace(/_/g, '.') : docId)).trim().toLowerCase();
-      const uid = (data.uid || data.firebaseUid || '').trim();
+      const rawEmail = (
+        data.email ||
+        data.studentEmail ||
+        (docId.includes('@') ? docId : (docId.includes('_') ? docId.replace(/_/g, '.') : ''))
+      ).trim().toLowerCase();
+      const cleanEmail = rawEmail.includes('@') ? rawEmail : (docId === 'master_admin' ? MASTER_ADMIN_EMAIL.toLowerCase() : rawEmail);
+      const cleanUid = (
+        data.uid ||
+        data.firebaseUid ||
+        (docId.length >= 15 && !docId.includes('@') && !docId.includes('_') ? docId : '')
+      ).trim();
 
       const isMasterAdmin =
-        email === MASTER_ADMIN_EMAIL.toLowerCase() ||
+        cleanEmail === MASTER_ADMIN_EMAIL.toLowerCase() ||
         docId === 'master_admin' ||
         docId === 'hasnainbuilds724656_gmail_com';
 
-      // 1. Master Administrator check
-      if (isMasterAdmin) {
-        legitimateDocs.push({ docId, data });
-        result.validAccounts.push({
-          id: docId,
-          email: MASTER_ADMIN_EMAIL,
-          uid: uid || '97DtWk8axhfWOyi3hZfOcWgS0n92',
-          role: 'master_admin',
-          emailVerified: true,
+      const hasAuthenticUid = Boolean(
+        isMasterAdmin || (
+          cleanUid &&
+          !cleanUid.startsWith('uid_') &&
+          cleanUid.length >= 15 &&
+          !cleanUid.includes('@')
+        )
+      );
+
+      scannedDocs.push({
+        docId,
+        data,
+        cleanEmail: isMasterAdmin ? MASTER_ADMIN_EMAIL.toLowerCase() : cleanEmail,
+        cleanUid: isMasterAdmin ? (cleanUid || '97DtWk8axhfWOyi3hZfOcWgS0n92') : cleanUid,
+        isMasterAdmin,
+        hasAuthenticUid,
+      });
+    }
+
+    // Group documents by canonical user key (email if valid, else authentic UID)
+    const userGroups = new Map<string, ScannedDoc[]>();
+    const orphanDocs: { docId: string; data: any; reason: string }[] = [];
+
+    for (const docItem of scannedDocs) {
+      if (docItem.isMasterAdmin) {
+        const group = userGroups.get(MASTER_ADMIN_EMAIL.toLowerCase()) || [];
+        group.push(docItem);
+        userGroups.set(MASTER_ADMIN_EMAIL.toLowerCase(), group);
+        continue;
+      }
+
+      if (!docItem.hasAuthenticUid && (!docItem.cleanEmail || !docItem.cleanEmail.includes('@'))) {
+        orphanDocs.push({
+          docId: docItem.docId,
+          data: docItem.data,
+          reason: 'Legacy or synthetic profile missing verified Firebase Authentication UID.',
+        });
+        result.orphanedAccounts.push({
+          id: docItem.docId,
+          email: docItem.cleanEmail || 'Unknown',
+          reason: 'Missing verified Firebase Auth UID',
         });
         continue;
       }
 
-      // 2. Validate Firebase UID format (standard Firebase Auth UIDs are >= 20 characters alphanumeric)
-      const hasAuthenticUid = Boolean(
-        uid &&
-        !uid.startsWith('uid_') &&
-        uid.length >= 15 &&
-        !uid.includes('@')
-      );
+      const key = docItem.cleanEmail || docItem.cleanUid;
+      const group = userGroups.get(key) || [];
+      group.push(docItem);
+      userGroups.set(key, group);
+    }
 
-      if (hasAuthenticUid) {
-        // Check for duplicates
-        if (seenUids.has(uid) && docId !== uid) {
-          orphanDocs.push({
-            docId,
-            data,
-            reason: `Duplicate secondary profile document for UID ${uid}. Primary is users/${uid}.`,
-          });
-          result.duplicateCount++;
-        } else {
-          seenUids.add(uid);
-          seenEmails.add(email);
-          legitimateDocs.push({ docId, data });
-          result.validAccounts.push({
-            id: docId,
-            email,
-            uid,
-            role: data.role || 'student',
-            emailVerified: !!data.emailVerified,
-          });
-        }
-      } else {
-        // Document lacks a valid Firebase Authentication UID
+    // For each authentic user identity, establish EXACTLY ONE primary document and flag duplicate secondary documents
+    for (const [, docs] of userGroups.entries()) {
+      if (docs.length === 0) continue;
+
+      // Primary selection rule:
+      // 1. If docId matches the authentic UID, that is the primary document
+      // 2. Otherwise, prefer document with richest populated fields or earliest registration
+      docs.sort((a, b) => {
+        if (a.docId === a.cleanUid && b.docId !== b.cleanUid) return -1;
+        if (b.docId === b.cleanUid && a.docId !== a.cleanUid) return 1;
+        return (b.data?.registeredDate ? 1 : 0) - (a.data?.registeredDate ? 1 : 0);
+      });
+
+      const primary = docs[0];
+      const duplicates = docs.slice(1);
+
+      // Add exactly ONE verified entry to validAccounts (Zero duplicates)
+      result.validAccounts.push({
+        id: primary.docId,
+        email: primary.cleanEmail,
+        uid: primary.cleanUid,
+        role: primary.isMasterAdmin ? 'master_admin' : (primary.data.role || 'student'),
+        emailVerified: primary.isMasterAdmin || Boolean(primary.data.emailVerified),
+      });
+
+      // Mark any extra secondary documents as duplicates to be reconciled / archived
+      for (const dup of duplicates) {
         orphanDocs.push({
-          docId,
-          data,
-          reason: 'Legacy or synthetic profile missing verified Firebase Authentication UID.',
+          docId: dup.docId,
+          data: dup.data,
+          reason: `Duplicate secondary profile document for ${dup.cleanEmail}. Primary is users/${primary.docId}.`,
         });
+        result.duplicateCount++;
         result.orphanedAccounts.push({
-          id: docId,
-          email: email || 'Unknown',
-          reason: 'Missing verified Firebase Auth UID',
+          id: dup.docId,
+          email: dup.cleanEmail,
+          reason: `Duplicate secondary profile (Primary: users/${primary.docId})`,
         });
       }
     }
 
-    result.validCount = legitimateDocs.length;
+    result.validCount = result.validAccounts.length;
     result.orphanedCount = orphanDocs.length;
 
     // If NOT a dry run, perform safe backup and archive before deletion

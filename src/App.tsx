@@ -27,7 +27,14 @@ import { subscribeToCurriculumSubjects } from './lib/subjectService';
 import { subscribeToStudentSubmissions, TeacherSubmissionItem } from './lib/teacherService';
 import { SubjectInfo } from './data/portalData';
 import { cacheOfflineData, getCachedOfflineData } from './lib/offlineCacheService';
-import { subscribeToPublishedSchedule } from './lib/scheduleService';
+import { subscribeToPublishedSchedule, subscribeToScheduleOverrides } from './lib/scheduleService';
+import {
+  RecurringSchedule,
+  ScheduleOverrideItem,
+  LiveScheduleState,
+  calculateLiveScheduleState,
+  getKarachiDateTime,
+} from './lib/scheduleEngine';
 
 // Screens & Layouts
 import { LoginScreen } from './components/screens/LoginScreen';
@@ -94,6 +101,9 @@ export default function App() {
   const [studentSubmissions, setStudentSubmissions] = useState<TeacherSubmissionItem[]>([]);
 
   const [publishedScheduleItems, setPublishedScheduleItems] = useState<ScheduleItem[]>(SCHEDULE_ITEMS);
+  const [publishedSchedule, setPublishedSchedule] = useState<RecurringSchedule | null>(null);
+  const [scheduleOverrides, setScheduleOverrides] = useState<ScheduleOverrideItem[]>([]);
+  const [liveScheduleState, setLiveScheduleState] = useState<LiveScheduleState | null>(null);
 
   // Dynamic Real-time Calculations
   const unreadCount = notifications.filter((n) => !n.read).length;
@@ -108,11 +118,9 @@ export default function App() {
       ? Math.round((presentDaysCount / totalFinalizedDays) * 100)
       : 0;
 
-  // Authentic weekday schedule based on actual current day & real-time published schedule
-  const dayNames: ('Sun' | 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat')[] = [
-    'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'
-  ];
-  const currentDay = dayNames[new Date().getDay()];
+  // Institutional Karachi timezone date & schedule resolution
+  const karachiTime = getKarachiDateTime();
+  const currentDay = karachiTime.weekday;
   const isWeekend = currentDay === 'Sun' || currentDay === 'Sat';
 
   const activeScheduleItems = publishedScheduleItems.length > 0 ? publishedScheduleItems : SCHEDULE_ITEMS;
@@ -123,20 +131,25 @@ export default function App() {
 
   const dueSoonAssignments = assignments.filter((item) => item.status === 'todo').slice(0, 2);
 
-  // Next class calculation based on current time
-  const now = new Date();
-  const currentMinutesOfDay = now.getHours() * 60 + now.getMinutes();
-
-  const nextClass = todaySchedule.find((item) => {
-    const match = item.startTime.match(/(\d+):(\d+)\s*(AM|PM)/i);
-    if (!match) return false;
-    let h = parseInt(match[1], 10);
-    const m = parseInt(match[2], 10);
-    const ampm = match[3].toUpperCase();
-    if (ampm === 'PM' && h < 12) h += 12;
-    if (ampm === 'AM' && h === 12) h = 0;
-    return h * 60 + m >= currentMinutesOfDay;
-  }) || (todaySchedule.length > 0 ? todaySchedule[0] : undefined);
+  // Dynamic live next class fallback
+  const nextClass = liveScheduleState?.nextClass
+    ? {
+        id: liveScheduleState.nextClass.entryId,
+        subjectId: liveScheduleState.nextClass.subjectId,
+        subjectName: liveScheduleState.nextClass.subjectName,
+        time: `${liveScheduleState.nextClass.startTime} - ${liveScheduleState.nextClass.endTime}`,
+        startTime: liveScheduleState.nextClass.startTime,
+        endTime: liveScheduleState.nextClass.endTime,
+        room: liveScheduleState.nextClass.room || 'Department Lecture Hall',
+        day: liveScheduleState.nextClass.day as any,
+        dateNum: 22,
+        teacher: liveScheduleState.nextClass.teacherName || 'Faculty Instructor',
+        status: 'upcoming' as const,
+        startsIn: liveScheduleState.countdown?.type === 'starts_in' ? liveScheduleState.countdown.formatted : undefined,
+      }
+    : todaySchedule.length > 0
+    ? todaySchedule[0]
+    : undefined;
 
   // Handlers
   const handleToggleReminder = (classId: string, minutes: number) => {
@@ -413,34 +426,67 @@ export default function App() {
     }
   }, [activeScheduleItems]);
 
-  // 2e. Real-time published schedule subscription for student's section/class
+  // 2e. Real-time published schedule & date overrides subscription for student's section/class
   useEffect(() => {
     if (!currentUser || userRole === 'master_admin') return;
 
     const classId = currentUser.assignedClass || (student.section ? `BSSE ${student.section}` : 'BSSE 1A');
 
-    const unsubscribe = subscribeToPublishedSchedule(classId, (weeklySchedule) => {
-      if (weeklySchedule && Array.isArray(weeklySchedule.items) && weeklySchedule.items.length > 0) {
-        const mapped: ScheduleItem[] = weeklySchedule.items.map((item) => ({
-          id: item.id,
-          subjectId: item.subjectId,
-          subjectName: item.subjectName,
-          time: item.periodLabel || `${item.startTime} - ${item.endTime}`,
-          startTime: item.startTime,
-          endTime: item.endTime,
-          room: item.room || 'Department Lecture Hall',
-          day: item.day as any,
-          dateNum: 22,
-          teacher: item.teacherName || 'Faculty Instructor',
-          status: 'upcoming',
-        }));
-        setPublishedScheduleItems(mapped);
-        cacheOfflineData('schedules', mapped).catch(() => {});
+    const unsubSchedule = subscribeToPublishedSchedule(classId, (weeklySchedule) => {
+      if (weeklySchedule) {
+        setPublishedSchedule(weeklySchedule);
+        if (Array.isArray(weeklySchedule.items) && weeklySchedule.items.length > 0) {
+          const mapped: ScheduleItem[] = weeklySchedule.items.map((item) => ({
+            id: item.id,
+            subjectId: item.subjectId,
+            subjectName: item.subjectName,
+            time: `${item.startTime} - ${item.endTime}`,
+            startTime: item.startTime,
+            endTime: item.endTime,
+            room: item.room || 'Department Lecture Hall',
+            day: item.day as any,
+            dateNum: 22,
+            teacher: item.teacherName || 'Faculty Instructor',
+            status: 'upcoming',
+          }));
+          setPublishedScheduleItems(mapped);
+          cacheOfflineData('schedules', mapped).catch(() => {});
+        }
+      } else {
+        setPublishedSchedule(null);
       }
     });
 
-    return () => unsubscribe();
+    const unsubOverrides = subscribeToScheduleOverrides(classId, (overrides) => {
+      setScheduleOverrides(overrides);
+    });
+
+    return () => {
+      unsubSchedule();
+      unsubOverrides();
+    };
   }, [currentUser?.email, currentUser?.assignedClass, student.section, userRole]);
+
+  // 2f. Deterministic 1-second interval effect for live active/upcoming class countdown
+  useEffect(() => {
+    const updateLiveState = () => {
+      const state = calculateLiveScheduleState(publishedSchedule, scheduleOverrides, new Date());
+      setLiveScheduleState(state);
+    };
+
+    updateLiveState();
+    const interval = setInterval(updateLiveState, 1000);
+
+    const handleFocus = () => updateLiveState();
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('visibilitychange', handleFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('visibilitychange', handleFocus);
+    };
+  }, [publishedSchedule, scheduleOverrides]);
 
   // 3. Real-time personal attendance subscription for enrolled student
   useEffect(() => {
@@ -614,9 +660,13 @@ export default function App() {
     }
 
     if (role === 'student' || role === 'cr' || isUserCR(user)) {
+      const cleanStudentName = user.name && !user.name.includes('@')
+        ? user.name
+        : (user.email ? user.email.split('@')[0].replace(/[._-]/g, ' ').replace(/\d+/g, '').trim().replace(/\b\w/g, (c) => c.toUpperCase()) : 'Student');
+
       setStudent({
         id: user.studentId || user.id,
-        name: user.name,
+        name: cleanStudentName,
         fatherName: user.fatherName || 'Not Provided',
         email: user.email,
         department: user.department || 'Software Engineering',
@@ -681,6 +731,10 @@ export default function App() {
     return (
       <EmailVerificationPendingScreen
         email={pendingVerificationEmail}
+        onVerificationSuccess={(user, role) => {
+          setPendingVerificationEmail(null);
+          handleLoginSuccess(user, role);
+        }}
         onVerified={async () => {
           setPendingVerificationEmail(null);
           if (auth?.currentUser) {
@@ -825,6 +879,7 @@ export default function App() {
                       assignedClass={currentUser?.assignedClass || 'BSSE 1A'}
                       onOpenCRPanel={() => setPortalMode('cr')}
                       totalSubjectsCount={curriculumSubjects.length}
+                      liveScheduleState={liveScheduleState}
                     />
                   )}
 
@@ -833,6 +888,9 @@ export default function App() {
                       scheduleItems={activeScheduleItems}
                       reminders={reminders}
                       onToggleReminder={handleToggleReminder}
+                      publishedSchedule={publishedSchedule}
+                      scheduleOverrides={scheduleOverrides}
+                      liveScheduleState={liveScheduleState}
                     />
                   )}
 

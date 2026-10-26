@@ -37,6 +37,7 @@ export const CRAssignmentsView: React.FC<CRAssignmentsViewProps> = ({
   const [searchedCandidates, setSearchedCandidates] = useState<AdminUser[]>([]);
 
   const [showRevokeModalClass, setShowRevokeModalClass] = useState<ClassSection | null>(null);
+  const [targetRevokeUser, setTargetRevokeUser] = useState<AdminUser | null>(null);
   const [revocationReason, setRevocationReason] = useState('');
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -125,16 +126,18 @@ export const CRAssignmentsView: React.FC<CRAssignmentsViewProps> = ({
     if (!showRevokeModalClass) return;
 
     const classKey = `${showRevokeModalClass.class} ${showRevokeModalClass.section}`.toLowerCase();
-    const activeCR = safeUsers.find(
+    const activeCR = targetRevokeUser || safeUsers.find(
       (u) =>
         (u.isCR || u.role === 'cr' || u.roles?.includes('cr')) &&
         u.crStatus !== 'revoked' &&
-        u.assignedClass?.toLowerCase() === classKey
+        (u.assignedClass?.toLowerCase() === classKey ||
+          u.assignedClass?.toLowerCase().replace(/\s+/g, '') === classKey.replace(/\s+/g, ''))
     );
 
     if (!activeCR) {
       setErrorMessage('No active Class Representative found to revoke.');
       setShowRevokeModalClass(null);
+      setTargetRevokeUser(null);
       return;
     }
 
@@ -220,44 +223,14 @@ export const CRAssignmentsView: React.FC<CRAssignmentsViewProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {classes.map((cls) => {
             const classKey = `${cls.class} ${cls.section}`.toLowerCase();
-            // Find real assigned CR from live user accounts
-            const assignedCRUser = safeUsers.find(
+            // Find all active assigned CRs from live user accounts
+            const assignedCRUsers = safeUsers.filter(
               (u) =>
                 (u.isCR || u.role === 'cr' || (Array.isArray(u.roles) && u.roles.includes('cr'))) &&
                 u.crStatus !== 'revoked' &&
                 (u.assignedClass?.toLowerCase() === classKey ||
                   u.assignedClass?.toLowerCase().replace(/\s+/g, '') === classKey.replace(/\s+/g, ''))
             );
-
-            const realCRName = assignedCRUser?.name || cls.assignedCR;
-            const realCREmail = assignedCRUser?.email || cls.assignedCREmail;
-
-            // Account Health Status
-            let healthBadge = null;
-            if (assignedCRUser) {
-              if (assignedCRUser.status === 'suspended') {
-                healthBadge = (
-                  <span className="px-2 py-0.5 bg-red-100 text-red-700 font-bold text-[10px] rounded-full flex items-center gap-1">
-                    <ShieldCheck className="w-3 h-3 text-red-600" />
-                    Account Suspended
-                  </span>
-                );
-              } else if (assignedCRUser.crAcknowledged === false) {
-                healthBadge = (
-                  <span className="px-2 py-0.5 bg-amber-100 text-amber-800 font-bold text-[10px] rounded-full flex items-center gap-1">
-                    <ShieldCheck className="w-3 h-3 text-amber-600" />
-                    Pending Ack
-                  </span>
-                );
-              } else {
-                healthBadge = (
-                  <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 font-bold text-[10px] rounded-full flex items-center gap-1">
-                    <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                    Healthy / Active
-                  </span>
-                );
-              }
-            }
 
             // Real enrolled count in this class/section
             const enrolledStudents = safeUsers.filter(
@@ -288,21 +261,66 @@ export const CRAssignmentsView: React.FC<CRAssignmentsViewProps> = ({
                 </div>
 
                 <div className="p-3.5 bg-white border border-[#E6D8C7] rounded-2xl">
-                  <div className="flex items-center justify-between mb-1.5">
+                  <div className="flex items-center justify-between mb-2">
                     <span className="text-[10px] font-bold text-[#806A56] uppercase tracking-wider block">
-                      Appointed Class Representative
+                      Appointed Class Representative{assignedCRUsers.length > 1 ? 's' : ''}
                     </span>
-                    {healthBadge}
+                    <span className="text-[10px] font-mono text-[#806A56]">
+                      {assignedCRUsers.length > 0 ? `${assignedCRUsers.length} Active` : '0 Active'}
+                    </span>
                   </div>
-                  {realCRName ? (
+
+                  {assignedCRUsers.length > 0 ? (
+                    <div className="space-y-2">
+                      {assignedCRUsers.map((crUser) => (
+                        <div
+                          key={crUser.id || crUser.email}
+                          className="flex items-center justify-between gap-2 p-2 bg-[#FFF9F1] border border-[#E6D8C7] rounded-xl"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className="w-7 h-7 rounded-full bg-[#3A7BD5] text-[#FFF9F1] flex items-center justify-center font-bold text-xs shrink-0">
+                              {crUser.name.charAt(0)}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-bold text-xs text-[#38271C] truncate">{crUser.name}</div>
+                              <div className="text-[10px] text-[#806A56] font-mono truncate">{crUser.email}</div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {crUser.crAcknowledged === false ? (
+                              <span className="px-1.5 py-0.5 bg-amber-100 text-amber-800 font-bold text-[9px] rounded-full">
+                                Pending Ack
+                              </span>
+                            ) : (
+                              <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-800 font-bold text-[9px] rounded-full">
+                                Active
+                              </span>
+                            )}
+                            <button
+                              onClick={() => {
+                                setShowRevokeModalClass(cls);
+                                setTargetRevokeUser(crUser);
+                                setRevocationReason('');
+                                setErrorMessage(null);
+                              }}
+                              className="p-1 hover:bg-red-50 text-red-600 rounded-lg transition-colors cursor-pointer"
+                              title={`Revoke CR privileges from ${crUser.name}`}
+                            >
+                              <UserX className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : cls.assignedCR ? (
                     <div className="flex items-center gap-2.5">
                       <div className="w-8 h-8 rounded-full bg-[#3A7BD5] text-[#FFF9F1] flex items-center justify-center font-bold text-xs shrink-0">
-                        {realCRName.charAt(0)}
+                        {cls.assignedCR.charAt(0)}
                       </div>
                       <div className="min-w-0">
-                        <div className="font-bold text-xs text-[#38271C] truncate">{realCRName}</div>
+                        <div className="font-bold text-xs text-[#38271C] truncate">{cls.assignedCR}</div>
                         <div className="text-[11px] text-[#806A56] font-mono truncate">
-                          {realCREmail || 'cr@awkum.edu.pk'}
+                          {cls.assignedCREmail || 'cr@awkum.edu.pk'}
                         </div>
                       </div>
                     </div>
@@ -324,22 +342,8 @@ export const CRAssignmentsView: React.FC<CRAssignmentsViewProps> = ({
                     className="flex-1 py-2 bg-[#3A7BD5] hover:bg-[#2e64b0] text-white text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
                   >
                     <UserCheck className="w-3.5 h-3.5" />
-                    <span>{realCRName ? 'Replace CR' : 'Appoint CR'}</span>
+                    <span>{assignedCRUsers.length > 0 ? 'Appoint / Add CR' : 'Appoint CR'}</span>
                   </button>
-
-                  {realCRName && (
-                    <button
-                      onClick={() => {
-                        setShowRevokeModalClass(cls);
-                        setRevocationReason('');
-                        setErrorMessage(null);
-                      }}
-                      className="p-2 bg-white hover:bg-red-50 text-red-600 border border-red-200 rounded-xl transition-colors cursor-pointer"
-                      title="Revoke CR Privileges"
-                    >
-                      <UserX className="w-4 h-4" />
-                    </button>
-                  )}
                 </div>
               </div>
             );
@@ -543,7 +547,11 @@ export const CRAssignmentsView: React.FC<CRAssignmentsViewProps> = ({
 
             <p className="text-xs text-[#38271C] leading-relaxed">
               Are you sure you want to revoke Class Representative privileges for{' '}
-              <strong>{showRevokeModalClass.class} {showRevokeModalClass.section}</strong>? The student account will remain active with standard student portal privileges.
+              <strong>
+                {targetRevokeUser
+                  ? `${targetRevokeUser.name} (${targetRevokeUser.email})`
+                  : `${showRevokeModalClass.class} ${showRevokeModalClass.section}`}
+              </strong>? The student account will remain active with standard student portal privileges.
             </p>
 
             <div>

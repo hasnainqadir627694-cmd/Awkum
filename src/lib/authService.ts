@@ -60,22 +60,67 @@ export function normalizeUserRecord(docId: string, data: any): AdminUser {
     data?.studentEmail ||
     data?.userEmail ||
     (docId.includes('@') ? docId : (docId.includes('_') ? docId.replace(/_/g, '.') : ''))
-  ).trim();
+  ).trim().toLowerCase();
 
   const email = rawEmail.includes('@') ? rawEmail : (data?.email || `${docId}@awkum.edu.pk`);
+
+  // Extract clean human full name
+  const rawName = data?.name || data?.fullName || data?.teacherName || data?.displayName || data?.claimedByName || data?.studentName;
+  let cleanName = (typeof rawName === 'string' && rawName.trim()) ? rawName.trim() : '';
+
+  if (!cleanName || cleanName.includes('@') || cleanName.toLowerCase() === email.toLowerCase()) {
+    const alternativeName = data?.fullName || data?.teacherName || data?.studentName || data?.displayName || data?.claimedByName;
+    if (alternativeName && typeof alternativeName === 'string' && !alternativeName.includes('@')) {
+      cleanName = alternativeName.trim();
+    } else {
+      const emailPrefix = (email.includes('@') ? email.split('@')[0] : cleanName || docId)
+        .replace(/[._-]/g, ' ')
+        .replace(/\d+/g, '')
+        .trim();
+      cleanName = emailPrefix
+        ? emailPrefix.replace(/\b\w/g, (c: string) => c.toUpperCase())
+        : 'Registered User';
+    }
+  }
+
   const rawRole = (data?.role as string) || 'student';
-  const crStatus = (data?.crStatus as ('active' | 'revoked' | 'none' | undefined)) || undefined;
-  
-  // Strict revocation enforcement: if revoked, role cannot be CR
-  const effectiveRole: UserRole =
-    crStatus === 'revoked' && rawRole === 'cr'
-      ? 'student'
-      : (['master_admin', 'teacher', 'cr', 'student'].includes(rawRole) ? (rawRole as UserRole) : 'student');
+  const rawCrStatus = (data?.crStatus as ('active' | 'revoked' | 'none' | undefined)) || undefined;
+  const rawTeacherStatus = (data?.teacherStatus as ('active' | 'revoked' | 'registration_pending_verification' | 'none' | undefined)) || undefined;
+
+  const isTeacherByData =
+    rawTeacherStatus === 'active' ||
+    rawTeacherStatus === 'registration_pending_verification' ||
+    rawRole === 'teacher' ||
+    (Array.isArray(data?.roles) && data.roles.includes('teacher'));
+
+  // If user has both crAssignedAt and crRevokedAt timestamps, the most recent action dictates status
+  let crStatus = rawCrStatus;
+  if (data?.crAssignedAt && data?.crRevokedAt) {
+    if (new Date(data.crAssignedAt).getTime() >= new Date(data.crRevokedAt).getTime()) {
+      crStatus = 'active';
+    } else {
+      crStatus = 'revoked';
+    }
+  }
 
   const isCR = Boolean(
-    crStatus === 'active' ||
-    (crStatus !== 'revoked' && (data?.isCR || rawRole === 'cr' || (Array.isArray(data?.roles) && data.roles.includes('cr'))))
+    !isTeacherByData && (
+      crStatus === 'active' ||
+      (crStatus !== 'revoked' && (data?.isCR || rawRole === 'cr' || (Array.isArray(data?.roles) && data.roles.includes('cr'))))
+    )
   );
+
+  // Effective role evaluation: teacher takes precedence if active
+  let effectiveRole: UserRole = 'student';
+  if (isTeacherByData && rawTeacherStatus !== 'revoked') {
+    effectiveRole = 'teacher';
+  } else if (crStatus === 'revoked' && rawRole === 'cr') {
+    effectiveRole = 'student';
+  } else if (['master_admin', 'teacher', 'cr', 'student'].includes(rawRole)) {
+    effectiveRole = rawRole as UserRole;
+  } else if (isCR) {
+    effectiveRole = 'cr';
+  }
 
   const isMasterAdmin = email.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase() || docId === 'master_admin';
   const emailVerified = Boolean(isMasterAdmin || data?.emailVerified === true);
@@ -89,15 +134,18 @@ export function normalizeUserRecord(docId: string, data: any): AdminUser {
   return {
     id: data?.id || `u-${docId}`,
     uid: effectiveUid,
-    name: data?.name || data?.fullName || (email.includes('@') ? email.split('@')[0].replace(/[._]/g, ' ') : 'Registered Student'),
+    name: cleanName,
     email: email,
-    studentId: data?.studentId || data?.rollNo || data?.rollNumber || undefined,
+    studentId: isTeacherByData ? undefined : (data?.studentId || data?.rollNo || data?.rollNumber || undefined),
     role: effectiveRole,
-    roles: Array.isArray(data?.roles) && data.roles.length > 0
-      ? (crStatus === 'revoked' ? data.roles.filter((r: string) => r !== 'cr') : data.roles)
-      : (isCR ? ['student', 'cr'] : [effectiveRole]),
+    roles: effectiveRole === 'teacher'
+      ? ['teacher']
+      : (Array.isArray(data?.roles) && data.roles.length > 0
+        ? (crStatus === 'revoked' ? data.roles.filter((r: string) => r !== 'cr') : Array.from(new Set([...data.roles, ...(isCR ? ['cr'] : [])])))
+        : (isCR ? ['student', 'cr'] : [effectiveRole])),
     isCR: isCR && crStatus !== 'revoked',
     crStatus: crStatus || (isCR ? 'active' : 'none'),
+    teacherStatus: rawTeacherStatus || (isTeacherByData ? 'active' : 'none'),
     status: (['active', 'pending', 'suspended'].includes(data?.status) ? data.status : 'active') as UserStatus,
     emailVerified,
     verifiedAt: data?.verifiedAt || (isMasterAdmin ? 'Oct 01, 2026' : undefined),
@@ -111,9 +159,9 @@ export function normalizeUserRecord(docId: string, data: any): AdminUser {
     assignedSubjects: Array.isArray(data?.assignedSubjects) ? data.assignedSubjects : undefined,
     assignedClass: data?.assignedClass || undefined,
     phone: data?.phone,
-    department: data?.department || 'Software Engineering',
-    fatherName: data?.fatherName,
-    semester: data?.semester || '1st Semester',
+    department: data?.department || (isTeacherByData ? 'Department of Computer Science & Software Engineering' : 'Software Engineering'),
+    fatherName: isTeacherByData ? undefined : data?.fatherName,
+    semester: isTeacherByData ? undefined : (data?.semester || '1st Semester'),
     crAssignedAt: data?.crAssignedAt,
     crAssignedBy: data?.crAssignedBy,
     crRevokedAt: data?.crRevokedAt,
@@ -127,28 +175,41 @@ export function normalizeUserRecord(docId: string, data: any): AdminUser {
  * Merges base directory users with live Firebase users (Firestore takes precedence)
  */
 export function mergeUsers(baseUsers: AdminUser[], firestoreUsers: AdminUser[]): AdminUser[] {
-  const map = new Map<string, AdminUser>();
+  const emailMap = new Map<string, AdminUser>();
+  const uidToEmailMap = new Map<string, string>();
 
-  // Add initial/base users
-  baseUsers.forEach((u) => {
-    if (u && u.email) {
-      map.set(u.email.toLowerCase(), u);
+  const process = (u: AdminUser, isFirestore: boolean) => {
+    if (!u) return;
+    const cleanEmail = (u.email || '').trim().toLowerCase();
+    const cleanUid = (u.uid || '').trim();
+
+    // Find existing by UID or cleanEmail
+    const existingKey = (cleanUid && uidToEmailMap.get(cleanUid)) || (cleanEmail && emailMap.has(cleanEmail) ? cleanEmail : null);
+    const existing = existingKey ? emailMap.get(existingKey) : undefined;
+
+    const mergedUser: AdminUser = {
+      ...(existing || {}),
+      ...u,
+      id: u.id || existing?.id || (cleanUid ? `u-${cleanUid}` : `u-${cleanEmail}`),
+      email: cleanEmail || existing?.email || u.email,
+      uid: cleanUid || existing?.uid || u.uid,
+      isFirebaseUser: isFirestore || existing?.isFirebaseUser || false,
+    };
+
+    const targetKey = mergedUser.email ? mergedUser.email.toLowerCase() : (cleanUid || mergedUser.id);
+    emailMap.set(targetKey, mergedUser);
+    if (cleanUid) {
+      uidToEmailMap.set(cleanUid, targetKey);
     }
-  });
-
-  // Overlay Firestore users (Firestore is source of truth)
-  firestoreUsers.forEach((u) => {
-    if (u && u.email) {
-      const existing = map.get(u.email.toLowerCase());
-      map.set(u.email.toLowerCase(), {
-        ...(existing || {}),
-        ...u,
-        isFirebaseUser: true,
-      });
+    if (mergedUser.uid) {
+      uidToEmailMap.set(mergedUser.uid, targetKey);
     }
-  });
+  };
 
-  return Array.from(map.values());
+  baseUsers.forEach((u) => process(u, false));
+  firestoreUsers.forEach((u) => process(u, true));
+
+  return Array.from(emailMap.values());
 }
 
 /**
@@ -278,7 +339,6 @@ export async function validateCRAssignmentOnServer(
   const cleanEmail = (email || '').trim().toLowerCase();
   const cleanUid = (uid || '').trim();
 
-  // 1. Check server-side Express authorization API
   try {
     const res = await fetch('/api/auth/validate-cr', {
       method: 'POST',
@@ -287,75 +347,26 @@ export async function validateCRAssignmentOnServer(
     });
     if (res.ok) {
       const data = await res.json();
-      return data;
+      if (data && (data.isCR || data.status === 'active' || data.status === 'revoked')) {
+        return data;
+      }
     }
-  } catch (err) {
-    console.info('[Auth Service] Server API check notice:', err);
-  }
-
-  // 2. Query Firestore crAssignments collection & users collection with fast timeout
-  if (db && (cleanEmail || cleanUid)) {
-    try {
-      const crCol = collection(db, 'crAssignments');
-      if (cleanUid) {
-        const snap = await Promise.race([
-          getDocs(query(crCol, where('uid', '==', cleanUid), where('status', '==', 'active'))),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
-        ]);
-        if (snap && !snap.empty) {
-          const docData = snap.docs[0].data();
-          return { isCR: true, assignedClass: docData.assignedClass, status: 'active', assignment: docData };
-        }
-      }
-      if (cleanEmail) {
-        const snap = await Promise.race([
-          getDocs(query(crCol, where('email', '==', cleanEmail), where('status', '==', 'active'))),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
-        ]);
-        if (snap && !snap.empty) {
-          const docData = snap.docs[0].data();
-          return { isCR: true, assignedClass: docData.assignedClass, status: 'active', assignment: docData };
-        }
-      }
-
-      // Check users collection in Firestore
-      const userDocRef = doc(db, 'users', (cleanEmail || cleanUid).replace(/[@.]/g, '_'));
-      const uSnap = await Promise.race([
-        getDoc(userDocRef),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
-      ]);
-      if (uSnap && uSnap.exists()) {
-        const uData = uSnap.data();
-        if (
-          uData.crStatus !== 'revoked' &&
-          (uData.isCR || uData.role === 'cr' || (Array.isArray(uData.roles) && uData.roles.includes('cr')))
-        ) {
-          return { isCR: true, assignedClass: uData.assignedClass || 'BS SE', status: 'active', assignment: uData };
-        }
-        if (uData.crStatus === 'revoked') {
-          return { isCR: false, assignedClass: null, status: 'revoked' };
-        }
-      }
-    } catch (err) {
-      console.info('[Auth Service] Firestore crAssignments check notice:', err);
-    }
-  }
+  } catch (err) {}
 
   return { isCR: false, assignedClass: null, status: 'none' };
 }
 
 /**
  * Server-authoritative check verifying if an account currently has an active, valid Teacher assignment.
- * Checks server endpoint and Firestore teacherAssignments collection.
+ * Checks server endpoint.
  */
 export async function validateTeacherAssignmentOnServer(
   uid?: string,
   email?: string
-): Promise<{ isTeacher: boolean; assignedSubjects: string[]; status: 'active' | 'revoked' | 'none'; assignment?: any }> {
+): Promise<{ isTeacher: boolean; assignedSubjects: string[]; status: 'active' | 'revoked' | 'none'; teacherName?: string; assignment?: any }> {
   const cleanEmail = (email || '').trim().toLowerCase();
   const cleanUid = (uid || '').trim();
 
-  // 1. Check server-side Express authorization API
   try {
     const res = await fetch('/api/auth/validate-teacher', {
       method: 'POST',
@@ -364,64 +375,11 @@ export async function validateTeacherAssignmentOnServer(
     });
     if (res.ok) {
       const data = await res.json();
-      return data;
+      if (data && (data.isTeacher || data.status === 'active' || data.status === 'revoked')) {
+        return data;
+      }
     }
-  } catch (err) {
-    console.info('[Auth Service] Server teacher API check notice:', err);
-  }
-
-  // 2. Query Firestore teacherAssignments collection with fast timeout
-  if (db && (cleanEmail || cleanUid)) {
-    try {
-      const teacherCol = collection(db, 'teacherAssignments');
-      if (cleanUid) {
-        const snap = await Promise.race([
-          getDocs(query(teacherCol, where('uid', '==', cleanUid), where('status', '==', 'active'))),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
-        ]);
-        if (snap && !snap.empty) {
-          const docData = snap.docs[0].data();
-          return { isTeacher: true, assignedSubjects: docData.assignedSubjects || [], status: 'active', assignment: docData };
-        }
-      }
-      if (cleanEmail) {
-        const snap = await Promise.race([
-          getDocs(query(teacherCol, where('email', '==', cleanEmail), where('status', '==', 'active'))),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
-        ]);
-        if (snap && !snap.empty) {
-          const docData = snap.docs[0].data();
-          return { isTeacher: true, assignedSubjects: docData.assignedSubjects || [], status: 'active', assignment: docData };
-        }
-      }
-
-      // Check users collection in Firestore
-      const userDocRef = doc(db, 'users', (cleanEmail || cleanUid).replace(/[@.]/g, '_'));
-      const uSnap = await Promise.race([
-        getDoc(userDocRef),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
-      ]);
-      if (uSnap && uSnap.exists()) {
-        const uData = uSnap.data();
-        if (
-          uData.teacherStatus !== 'revoked' &&
-          (uData.role === 'teacher' || (Array.isArray(uData.roles) && uData.roles.includes('teacher')))
-        ) {
-          return {
-            isTeacher: true,
-            assignedSubjects: uData.assignedSubjects || [],
-            status: 'active',
-            assignment: uData,
-          };
-        }
-        if (uData.teacherStatus === 'revoked') {
-          return { isTeacher: false, assignedSubjects: [], status: 'revoked' };
-        }
-      }
-    } catch (err) {
-      console.info('[Auth Service] Firestore teacherAssignments check notice:', err);
-    }
-  }
+  } catch (err) {}
 
   return { isTeacher: false, assignedSubjects: [], status: 'none' };
 }
@@ -616,24 +574,76 @@ export async function resolveUserRole(
   }
 
   // 3f. If user is authenticated in Firebase Auth (verifiedUid or auth.currentUser) but has no Firestore doc yet:
-  // Auto-initialize their official student profile idempotently!
+  // Auto-initialize their official user profile idempotently respecting teacher/admin status!
   if (!matchedUser && (verifiedUid || auth?.currentUser)) {
     const liveAuth = auth?.currentUser;
     const effectiveUid = verifiedUid || liveAuth?.uid || `uid_${cleanId.replace(/[@.]/g, '_')}`;
-    const displayName =
-      liveAuth?.displayName ||
-      cleanId.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+
+    // Check if email or UID is registered in subjectInvitations or subjectTeacherAssignments
+    let isTeacherByInv = teacherVerdict.isTeacher;
+    let invTeacherName = '';
+    let invSubjects: string[] = [];
+
+    if (!isTeacherByInv && db) {
+      try {
+        const invSnap = await getDocs(query(collection(db, 'subjectInvitations')));
+        invSnap.forEach((d) => {
+          const inv = d.data();
+          const matchesEmail =
+            inv.teacherEmail?.toLowerCase() === cleanId ||
+            inv.reservedForEmail?.toLowerCase() === cleanId ||
+            inv.claimedByEmail?.toLowerCase() === cleanId;
+          const matchesUid =
+            inv.teacherUid === effectiveUid ||
+            inv.reservedForUid === effectiveUid ||
+            inv.claimedByUid === effectiveUid;
+
+          if (matchesEmail || matchesUid) {
+            isTeacherByInv = true;
+            if (inv.teacherName && !inv.teacherName.includes('@')) {
+              invTeacherName = inv.teacherName;
+            }
+            if (inv.subjectId) {
+              invSubjects.push(inv.subjectId);
+            }
+          }
+        });
+
+        const staSnap = await getDocs(query(collection(db, 'subjectTeacherAssignments')));
+        staSnap.forEach((d) => {
+          const sta = d.data();
+          if (sta.teacherEmail?.toLowerCase() === cleanId || sta.teacherUid === effectiveUid) {
+            isTeacherByInv = true;
+            if (sta.teacherName && !sta.teacherName.includes('@')) {
+              invTeacherName = sta.teacherName;
+            }
+            if (sta.subjectId) {
+              invSubjects.push(sta.subjectId);
+            }
+          }
+        });
+      } catch (e) {}
+    }
+
+    const isTeacherRole = isTeacherByInv;
+
+    const emailPrefix = cleanId.split('@')[0].replace(/[._-]/g, ' ').replace(/\d+/g, '').trim().replace(/\b\w/g, (c) => c.toUpperCase());
+    const rawDisplayName = liveAuth?.displayName || invTeacherName || emailPrefix;
+    const displayName = rawDisplayName && !rawDisplayName.includes('@') ? rawDisplayName : emailPrefix || (isTeacherRole ? 'Faculty Instructor' : 'Registered Student');
+
     const roll = Math.floor(1000 + Math.random() * 9000);
 
-    const initialStudent: AdminUser = {
+    const initialUser: AdminUser = {
       id: `u-${effectiveUid}`,
       uid: effectiveUid,
-      name: displayName || 'Registered Student',
-      fatherName: 'Not Provided',
+      name: displayName,
+      fatherName: isTeacherRole ? undefined : 'Not Provided',
       email: cleanId,
-      studentId: `26SE${roll}`,
-      role: 'student',
-      roles: ['student'],
+      studentId: isTeacherRole ? undefined : `26SE${roll}`,
+      role: isTeacherRole ? 'teacher' : 'student',
+      roles: isTeacherRole ? ['teacher'] : ['student'],
+      teacherStatus: isTeacherRole ? 'active' : 'none',
+      assignedSubjects: isTeacherRole ? (invSubjects.length > 0 ? invSubjects : teacherVerdict.assignedSubjects) : [],
       status: 'active',
       emailVerified: liveAuth?.emailVerified ?? false,
       registeredDate: new Date().toLocaleDateString('en-US', {
@@ -641,26 +651,26 @@ export async function resolveUserRole(
         day: 'numeric',
         year: 'numeric',
       }),
-      department: 'Software Engineering',
-      semester: '1st Semester',
+      department: isTeacherRole ? 'Department of Computer Science & Software Engineering' : 'Software Engineering',
+      semester: isTeacherRole ? undefined : '1st Semester',
       avatarUrl: liveAuth?.photoURL || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200',
       isFirebaseUser: true,
     };
 
     if (db) {
       try {
-        setDoc(doc(db, 'users', effectiveUid), initialStudent, { merge: true }).catch(() => {});
-        setDoc(doc(db, 'users', cleanId.replace(/[@.]/g, '_')), initialStudent, { merge: true }).catch(() => {});
+        setDoc(doc(db, 'users', effectiveUid), initialUser, { merge: true }).catch(() => {});
+        setDoc(doc(db, 'users', cleanId.replace(/[@.]/g, '_')), initialUser, { merge: true }).catch(() => {});
       } catch (e) {}
     }
 
-    registeredUsersPool = [initialStudent, ...registeredUsersPool.filter((u) => u.email.toLowerCase() !== cleanId)];
+    registeredUsersPool = [initialUser, ...registeredUsersPool.filter((u) => u.email.toLowerCase() !== cleanId)];
     notifyUserSubscribers(registeredUsersPool);
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('classhub_user_registered', { detail: initialStudent }));
+      window.dispatchEvent(new CustomEvent('classhub_user_registered', { detail: initialUser }));
     }
 
-    matchedUser = initialStudent;
+    matchedUser = initialUser;
   }
 
   if (matchedUser) {
@@ -679,10 +689,12 @@ export async function resolveUserRole(
 
     // Reconcile role strictly with server authorization:
     if (teacherVerdict.isTeacher) {
+      const resolvedTeacherName = teacherVerdict.teacherName || (matchedUser.name && !matchedUser.name.includes('@') && !matchedUser.name.toLowerCase().startsWith('teachertest') ? matchedUser.name : '');
       matchedUser = {
         ...matchedUser,
+        name: resolvedTeacherName || matchedUser.name,
         role: 'teacher',
-        roles: Array.from(new Set([...(matchedUser.roles || ['student']), 'teacher'])),
+        roles: ['teacher'],
         teacherStatus: 'active',
         assignedSubjects: teacherVerdict.assignedSubjects.length > 0 ? teacherVerdict.assignedSubjects : (matchedUser.assignedSubjects || []),
       };
@@ -710,17 +722,20 @@ export async function resolveUserRole(
         matchedUser.teacherStatus !== 'revoked' &&
         Boolean(
           matchedUser.role === 'teacher' ||
-            (Array.isArray(matchedUser.roles) && matchedUser.roles.includes('teacher'))
+            (Array.isArray(matchedUser.roles) && matchedUser.roles.includes('teacher')) ||
+            matchedUser.teacherStatus === 'active' ||
+            matchedUser.teacherStatus === 'registration_pending_verification'
         );
 
       const effectiveRole = preserveTeacher ? 'teacher' : preserveCR ? 'cr' : 'student';
-      const effectiveRoles: UserRole[] = Array.from(
-        new Set<UserRole>([
-          'student',
-          ...(preserveCR ? (['cr'] as UserRole[]) : []),
-          ...(preserveTeacher ? (['teacher'] as UserRole[]) : []),
-        ])
-      );
+      const effectiveRoles: UserRole[] = preserveTeacher
+        ? ['teacher']
+        : Array.from(
+            new Set<UserRole>([
+              'student',
+              ...(preserveCR ? (['cr'] as UserRole[]) : []),
+            ])
+          );
 
       matchedUser = {
         ...matchedUser,
@@ -733,6 +748,25 @@ export async function resolveUserRole(
     }
 
     const finalUser = matchedUser;
+
+    // Self-healing Firestore repair: If user is resolved as a Teacher, persist role and name back to Firestore immediately!
+    if (finalUser.role === 'teacher' && db) {
+      const repairPayload: any = {
+        role: 'teacher',
+        roles: ['teacher'],
+        teacherStatus: 'active',
+        assignedSubjects: finalUser.assignedSubjects || [],
+      };
+      if (finalUser.name && !finalUser.name.includes('@')) {
+        repairPayload.name = finalUser.name;
+        repairPayload.fullName = finalUser.name;
+        repairPayload.displayName = finalUser.name;
+      }
+      if (finalUser.uid) {
+        setDoc(doc(db, 'users', finalUser.uid), repairPayload, { merge: true }).catch(() => {});
+      }
+      setDoc(doc(db, 'users', finalUser.email.replace(/[@.]/g, '_')), repairPayload, { merge: true }).catch(() => {});
+    }
 
     // Strict Email Verification Check: Only Master Admin is exempt; all student/teacher accounts must be verified in Firebase Auth
     if (cleanId !== MASTER_ADMIN_EMAIL.toLowerCase()) {
@@ -1054,6 +1088,89 @@ export async function checkEmailVerificationStatus(): Promise<{
           emailVerified: true,
           verifiedAt: serverTimestamp(),
         }, { merge: true });
+
+        // Auto-finalize any pending subject teacher invitations for this verified Gmail account
+        try {
+          const invSnap = await getDocs(query(collection(db, 'subjectInvitations'), where('status', 'in', ['registration_pending_verification', 'reserved', 'active'])));
+          for (const d of invSnap.docs) {
+            const inv = d.data();
+            const matchesEmail = inv.teacherEmail?.toLowerCase() === email || inv.reservedForEmail?.toLowerCase() === email || inv.claimedByEmail?.toLowerCase() === email;
+            const matchesUid = inv.teacherUid === uid || inv.reservedForUid === uid || inv.claimedByUid === uid;
+            if (matchesEmail || matchesUid) {
+              const nowIso = new Date().toISOString();
+              const subjId = inv.subjectId;
+              const invId = d.id;
+
+              // 1. Mark invitation as claimed
+              await setDoc(doc(db, 'subjectInvitations', invId), {
+                status: 'claimed',
+                claimedAt: nowIso,
+                claimedByUid: uid,
+                claimedByEmail: email,
+              }, { merge: true });
+
+              // 2. Create subject teacher assignment record
+              const staId = `sta_${subjId}_${uid}_${Date.now()}`;
+              await setDoc(doc(db, 'subjectTeacherAssignments', staId), {
+                id: staId,
+                subjectId: subjId,
+                subjectName: inv.subjectName || subjId,
+                subjectCode: inv.subjectCode || subjId,
+                assignedClass: inv.assignedClass || '',
+                teacherUid: uid,
+                teacherEmail: email,
+                teacherName: inv.teacherName || 'Faculty Instructor',
+                status: 'active',
+                assignedBy: 'System Invitation Claim',
+                assignedAt: nowIso,
+                invitationId: invId,
+              });
+
+              // 3. Update subject doc
+              await setDoc(doc(db, 'subjects', subjId), {
+                teacherUid: uid,
+                teacherEmail: email,
+                status: 'Assigned',
+                teacherAssignedAt: nowIso,
+                assignmentId: staId,
+                invitationStatus: 'claimed',
+              }, { merge: true });
+
+              // 4. Update user profile
+              await setDoc(doc(db, 'users', uid), {
+                role: 'teacher',
+                roles: ['teacher'],
+                teacherStatus: 'active',
+                emailVerified: true,
+                teacherAssignedAt: nowIso,
+              }, { merge: true });
+
+              await setDoc(doc(db, 'users', email.replace(/[@.]/g, '_')), {
+                role: 'teacher',
+                roles: ['teacher'],
+                teacherStatus: 'active',
+                emailVerified: true,
+                teacherAssignedAt: nowIso,
+              }, { merge: true });
+
+              // Try backend server claim endpoint
+              fetch('/api/teacher-invitations/claim', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  invitationCode: inv.invitationCode,
+                  invitationPassword: inv.invitationPassword || 'verified',
+                  teacherUid: uid,
+                  teacherEmail: email,
+                  teacherName: inv.teacherName || 'Faculty Instructor',
+                  isEmailVerified: true,
+                }),
+              }).catch(() => {});
+            }
+          }
+        } catch (invErr) {
+          console.info('[Auth Service] Invitation claim notice on verification:', invErr);
+        }
       }
     } catch (e) {
       console.info('[Auth Service] Verification Firestore update notice:', e);
@@ -1233,41 +1350,7 @@ export async function grantCRAccess(
 
   const effectiveUid = targetUid || targetUser.uid || `uid_${cleanTarget.replace(/[@.]/g, '_')}`;
 
-  // 3. Find if another student is currently assigned as CR for this class -> Revoke previous CR
-  let previousCR: AdminUser | undefined;
-  registeredUsersPool = registeredUsersPool.map((u) => {
-    if (u.assignedClass === cleanClass && (u.role === 'cr' || u.isCR) && u.email.toLowerCase() !== targetUser!.email.toLowerCase()) {
-      previousCR = { ...u, role: 'student', isCR: false, roles: ['student'], crStatus: 'revoked' };
-      // Persist revocation of previous CR to Firestore
-      if (db) {
-        setDoc(doc(db, 'users', u.email.replace(/[@.]/g, '_')), previousCR, { merge: true }).catch(() => {});
-        setDoc(
-          doc(db, 'crAssignments', `cr_${u.email.replace(/[@.]/g, '_')}`),
-          {
-            status: 'revoked',
-            revokedAt: new Date().toISOString(),
-            revokedBy: cleanAdmin,
-            revocationReason: `Replaced by ${targetUser!.name} as CR for ${cleanClass}`,
-          },
-          { merge: true }
-        ).catch(() => {});
-      }
-      return previousCR;
-    }
-    return u;
-  });
-
-  if (previousCR) {
-    await recordAuditLog({
-      action: 'CR Assignment Replaced',
-      performedBy: adminEmail,
-      details: `${previousCR.name} (${previousCR.email}) replaced by ${targetUser.name} as CR for ${cleanClass}`,
-      category: 'role',
-      status: 'warning',
-    });
-  }
-
-  // 4. Update target student with active CR privileges
+  // 3. Update target student with active CR privileges (No automatic revocation of other students)
   const grantedAt = new Date().toISOString();
   const updatedUser: AdminUser = {
     ...targetUser,
@@ -1280,6 +1363,8 @@ export async function grantCRAccess(
     crAssignedAt: grantedAt,
     crAssignedBy: adminEmail,
     crAcknowledged: false, // Triggers confirmation dialog on first view
+    crRevokedAt: undefined,
+    crRevocationReason: undefined,
   };
 
   // Update in memory pool & notify
@@ -1294,7 +1379,7 @@ export async function grantCRAccess(
     window.dispatchEvent(new CustomEvent('classhub_user_role_changed', { detail: updatedUser }));
   }
 
-  // 5. Persist to Cloud Firestore: crAssignments (binding verified UID + Gmail) & users
+  // 4. Persist to Cloud Firestore: crAssignments (binding verified UID + Gmail) & users
   const assignmentDocId = `cr_${cleanTarget.replace(/[@.]/g, '_')}`;
   const assignmentRecord = {
     id: assignmentDocId,
@@ -1319,6 +1404,18 @@ export async function grantCRAccess(
 
       if (effectiveUid && !effectiveUid.startsWith('uid_')) {
         await setDoc(doc(db, 'users', effectiveUid), updatedUser, { merge: true }).catch(() => {});
+      }
+
+      // Cleanup any lingering stale crAssignment documents for this user with status 'revoked'
+      try {
+        const staleSnap = await getDocs(query(collection(db, 'crAssignments'), where('email', '==', cleanTarget)));
+        for (const sDoc of staleSnap.docs) {
+          if (sDoc.id !== assignmentDocId) {
+            await setDoc(sDoc.ref, { status: 'active', assignedClass: cleanClass, grantedAt, revokedAt: null, revokedBy: null }, { merge: true }).catch(() => {});
+          }
+        }
+      } catch (staleErr) {
+        console.info('[Auth Service] Stale CR cleanup notice:', staleErr);
       }
 
       // Save to roleAssignments history collection
@@ -1362,7 +1459,7 @@ export async function grantCRAccess(
   return {
     success: true,
     user: updatedUser,
-    previousCR,
+    previousCR: undefined,
   };
 }
 
@@ -1631,6 +1728,24 @@ export function subscribeToUserAccount(
       );
       unsubs.push(unsubUser);
 
+      // 4a-2. Query users collection by email so user receives updates whether doc is named by UID or email slug
+      const userCol = collection(db, 'users');
+      const userEmailQuery = query(userCol, where('email', '==', cleanEmail));
+      const unsubUserQuery = onSnapshot(
+        userEmailQuery,
+        (snapshot) => {
+          if (!snapshot.empty) {
+            const primaryDoc = snapshot.docs.find((d) => d.id === d.data().uid) || snapshot.docs[0];
+            const normalized = normalizeUserRecord(primaryDoc.id, primaryDoc.data());
+            applyUserUpdate(normalized);
+          }
+        },
+        (error: FirestoreError) => {
+          console.info('[Auth Service] User query listener notice:', error.message);
+        }
+      );
+      unsubs.push(unsubUserQuery);
+
       // 4b. Listen directly to crAssignments document for this user
       const crDocRef = doc(db, 'crAssignments', `cr_${cleanEmail.replace(/[@.]/g, '_')}`);
       const unsubCRDoc = onSnapshot(
@@ -1647,12 +1762,19 @@ export function subscribeToUserAccount(
                 assignedClass: data.assignedClass || activeUser.assignedClass || undefined,
               });
             } else if (data?.status === 'revoked') {
-              applyUserUpdate({
-                role: 'student',
-                roles: ['student'],
-                isCR: false,
-                crStatus: 'revoked',
-              });
+              // Only revoke if revocation timestamp is strictly AFTER appointment timestamp
+              const isExplicitRevocation =
+                data.revokedAt && activeUser.crAssignedAt
+                  ? new Date(data.revokedAt).getTime() > new Date(activeUser.crAssignedAt).getTime()
+                  : Boolean(data.revokedAt && !activeUser.isCR);
+              if (isExplicitRevocation) {
+                applyUserUpdate({
+                  role: 'student',
+                  roles: ['student'],
+                  isCR: false,
+                  crStatus: 'revoked',
+                });
+              }
             }
           }
         },
@@ -1691,7 +1813,7 @@ export function subscribeToUserAccount(
       );
       unsubs.push(unsubTeacherDoc);
 
-      // 4c. Listen to any crAssignments documents where email matches
+      // 4d. Listen to any crAssignments documents where email matches (only promotes to active CR)
       const crCol = collection(db, 'crAssignments');
       const crQuery = query(crCol, where('email', '==', cleanEmail));
       const unsubCRQuery = onSnapshot(
@@ -1708,16 +1830,6 @@ export function subscribeToUserAccount(
                 crStatus: 'active',
                 assignedClass: data.assignedClass || activeUser.assignedClass || 'BSCS 3A',
               });
-            } else {
-              const hasRevoked = snap.docs.some((d) => d.data().status === 'revoked');
-              if (hasRevoked && (activeUser.role === 'cr' || activeUser.isCR)) {
-                applyUserUpdate({
-                  role: 'student',
-                  roles: ['student'],
-                  isCR: false,
-                  crStatus: 'revoked',
-                });
-              }
             }
           }
         },

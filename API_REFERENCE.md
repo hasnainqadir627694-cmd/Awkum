@@ -280,6 +280,121 @@ Re-confirms active status for the currently assigned teacher without modifying h
 
 ---
 
+### 4.4 Subject Teacher Invitation Credentials Endpoints
+
+#### 4.4.1 Generate Subject Invitation
+Generates a unique subject invitation code and 12-char cryptographic password. Stores only SHA-256 hex hash in Firestore (`subjectInvitations`), returning the plaintext code & password to Master Admin once for copying.
+
+- **Route**: `POST /api/teacher-invitations/generate`
+- **Headers**: `Content-Type: application/json`
+- **Request Body**:
+  ```json
+  {
+    "adminEmail": "hasnainbuilds724656@gmail.com",
+    "subjectId": "subj_cs101"
+  }
+  ```
+- **Success Response** — `200 OK`:
+  ```json
+  {
+    "success": true,
+    "invitation": {
+      "id": "sinv_subj_cs101_1729836000000",
+      "invitationCode": "CS101-7M9K2X",
+      "invitationPassword": "X7k!9q2#mP4L",
+      "subjectId": "subj_cs101",
+      "subjectName": "Programming Fundamentals",
+      "subjectCode": "CS-101",
+      "status": "active"
+    }
+  }
+  ```
+
+#### 4.4.2 Verify Subject Invitation Credentials
+Verifies invitation code and plaintext password against stored SHA-256 hash. Enforces single-active-teacher policy and fetches verified subject details directly from Firestore.
+
+- **Route**: `POST /api/teacher-invitations/verify`
+- **Headers**: `Content-Type: application/json`
+- **Request Body**:
+  ```json
+  {
+    "invitationCode": "CS101-7M9K2X",
+    "invitationPassword": "••••••••••••"
+  }
+  ```
+- **Success Response** — `200 OK`:
+  ```json
+  {
+    "success": true,
+    "invitation": {
+      "id": "sinv_subj_cs101_1729836000000",
+      "invitationCode": "CS101-7M9K2X",
+      "subjectId": "subj_cs101",
+      "status": "active"
+    },
+    "subject": {
+      "id": "subj_cs101",
+      "name": "Programming Fundamentals",
+      "code": "CS-101",
+      "creditHours": 4,
+      "assignedClass": "BSCS 1st A"
+    }
+  }
+  ```
+
+#### 4.4.3 Reserve Subject Invitation (Pending Email Verification)
+Locks the invitation during teacher email verification to prevent concurrent claims.
+
+- **Route**: `POST /api/teacher-invitations/reserve`
+- **Headers**: `Content-Type: application/json`
+- **Request Body**:
+  ```json
+  {
+    "invitationId": "sinv_subj_cs101_1729836000000",
+    "teacherEmail": "teacher@awkum.edu.pk"
+  }
+  ```
+
+#### 4.4.4 Claim Subject Invitation
+Independently validates that the Firebase Auth user has `emailVerified: true`, atomically marks the invitation `claimed`, updates the subject document to `Assigned`, registers `subjectTeacherAssignments`, updates the user's role profile to `teacher`, and writes an immutable audit record.
+
+- **Route**: `POST /api/teacher-invitations/claim`
+- **Headers**: `Content-Type: application/json`
+- **Request Body**:
+  ```json
+  {
+    "invitationId": "sinv_subj_cs101_1729836000000",
+    "teacherUid": "verified_firebase_uid",
+    "teacherEmail": "teacher@awkum.edu.pk",
+    "teacherName": "Dr. Muhammad Asim"
+  }
+  ```
+- **Success Response** — `200 OK`:
+  ```json
+  {
+    "success": true,
+    "message": "Subject teacher claimed successfully.",
+    "subjectId": "subj_cs101",
+    "subjectName": "Programming Fundamentals"
+  }
+  ```
+
+#### 4.4.5 Revoke Subject Invitation
+Allows Master Admin to invalidate an active or pending invitation without touching existing course documents or submissions.
+
+- **Route**: `POST /api/teacher-invitations/revoke`
+- **Headers**: `Content-Type: application/json`
+- **Request Body**:
+  ```json
+  {
+    "adminEmail": "hasnainbuilds724656@gmail.com",
+    "invitationId": "sinv_subj_cs101_1729836000000",
+    "reason": "Administrative reallocation"
+  }
+  ```
+
+---
+
 ## 5. Diagnostics & Health Endpoint
 
 ### 5.1 System Health
