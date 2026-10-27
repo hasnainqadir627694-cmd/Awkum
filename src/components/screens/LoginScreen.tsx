@@ -244,70 +244,78 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         await updateProfile(authUser, { displayName: cleanName });
       } catch (e) {}
 
-      // 2. Check if email is already verified
-      if (authUser.emailVerified) {
-        // Claim immediately!
-        const claimRes = await claimTeacherInvitation({
-          invitationCode: inviteCode.trim().toUpperCase(),
-          invitationPassword: invitePassword.trim(),
-          teacherUid: authUser.uid,
-          teacherEmail: cleanEmail,
-          teacherName: cleanName,
-        });
+      // 2. Immediately and atomically claim teacher invitation and bind teacher to subject!
+      const effectiveUid = authUser.uid;
+      const claimRes = await claimTeacherInvitation({
+        invitationCode: inviteCode.trim().toUpperCase(),
+        invitationPassword: invitePassword.trim(),
+        teacherUid: effectiveUid,
+        teacherEmail: cleanEmail,
+        teacherName: cleanName,
+        subjectId: verifiedSubject?.id,
+        subjectName: verifiedSubject?.name,
+        subjectCode: verifiedSubject?.code,
+        assignedClass: verifiedSubject?.assignedClass,
+      });
 
-        if (!claimRes.success) {
-          setIsLoading(false);
-          setErrorMessage(claimRes.error || 'Failed to claim invitation.');
-          return;
-        }
-
+      if (!claimRes.success) {
         setIsLoading(false);
-        setSuccessMessage(`Welcome, Professor ${cleanName}! Invitation successfully claimed.`);
-
-        // Log in directly to Teacher Workspace
-        const resolution = await resolveUserRole(cleanEmail, teacherPassword, authUser.uid);
-        const activeTeacherUser: AdminUser = resolution.user ? {
-          ...resolution.user,
-          name: cleanName,
-          role: 'teacher',
-          roles: ['teacher'],
-          teacherStatus: 'active',
-        } : {
-          id: authUser.uid,
-          uid: authUser.uid,
-          name: cleanName,
-          email: cleanEmail,
-          role: 'teacher',
-          roles: ['teacher'],
-          teacherStatus: 'active',
-          status: 'active',
-          assignedClass: verifiedSubject?.assignedClass || '',
-          assignedSubjects: verifiedSubject ? [verifiedSubject.name] : [],
-          registeredDate: new Date().toISOString(),
-          emailVerified: true,
-        };
-        onLoginSuccess(activeTeacherUser, 'teacher');
+        setErrorMessage(claimRes.error || 'Failed to claim subject invitation.');
         return;
       }
 
-      // 3. Email is unverified -> Send verification email and reserve invitation
+      // 3. Dispatch optional Firebase email verification in background (non-blocking)
       try {
-        await sendEmailVerification(authUser);
+        sendEmailVerification(authUser).catch(() => {});
       } catch (emailErr: any) {
         console.warn('[Firebase Auth] Verification email notice:', emailErr);
       }
 
-      await reserveTeacherInvitation({
-        invitationCode: inviteCode.trim().toUpperCase(),
-        invitationPassword: invitePassword.trim(),
-        teacherEmail: cleanEmail,
-        teacherUid: authUser.uid,
-        teacherName: cleanName,
-      });
-
       setIsLoading(false);
-      setTeacherResendCooldown(60);
-      setTeacherClaimStep('verification_pending');
+      setSuccessMessage(`Welcome, Professor ${cleanName}! You are successfully registered as the managing teacher for ${verifiedSubject?.name || 'your subject'}. Opening your workspace...`);
+
+      // 4. Resolve user role and immediately log into Teacher Workspace
+      const resolution = await resolveUserRole(cleanEmail, teacherPassword, effectiveUid);
+      const activeTeacherUser: AdminUser = resolution.user ? {
+        ...resolution.user,
+        name: cleanName,
+        role: 'teacher',
+        roles: ['teacher'],
+        teacherStatus: 'active',
+        assignedSubjects: verifiedSubject ? [verifiedSubject.name] : (resolution.user.assignedSubjects || []),
+      } : {
+        id: effectiveUid,
+        uid: effectiveUid,
+        name: cleanName,
+        email: cleanEmail,
+        role: 'teacher',
+        roles: ['teacher'],
+        teacherStatus: 'active',
+        status: 'active',
+        assignedClass: verifiedSubject?.assignedClass || '',
+        assignedSubjects: verifiedSubject ? [verifiedSubject.name] : [],
+        registeredDate: new Date().toISOString(),
+        emailVerified: true,
+      };
+
+      if (rememberMe && typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(
+            'awkum_active_session',
+            JSON.stringify({
+              email: cleanEmail,
+              uid: effectiveUid,
+              role: 'teacher',
+              savedAt: Date.now(),
+            })
+          );
+        } catch (e) {}
+      }
+
+      setTimeout(() => {
+        onLoginSuccess(activeTeacherUser, 'teacher');
+      }, 700);
+      return;
     } catch (err: any) {
       setIsLoading(false);
       setErrorMessage(err?.message || 'Error completing teacher registration.');
@@ -326,15 +334,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         return;
       }
 
-      await auth.currentUser.reload();
+      try {
+        await auth.currentUser.reload();
+      } catch (e) {}
 
-      if (!auth.currentUser.emailVerified) {
-        setIsCheckingTeacherVerification(false);
-        setErrorMessage('Verification not detected yet. Please open the email, click the verification link, and click this button again.');
-        return;
-      }
-
-      // Email is confirmed verified! Execute atomic claim
+      // Execute atomic claim with verified subject metadata
       const cleanEmail = (auth.currentUser.email || teacherEmail).trim().toLowerCase();
       const cleanName = teacherFullName.trim() || auth.currentUser.displayName || 'Faculty Member';
 
@@ -348,6 +352,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         teacherUid: auth.currentUser.uid,
         teacherEmail: cleanEmail,
         teacherName: cleanName,
+        subjectId: verifiedSubject?.id,
+        subjectName: verifiedSubject?.name,
+        subjectCode: verifiedSubject?.code,
+        assignedClass: verifiedSubject?.assignedClass,
       });
 
       setIsCheckingTeacherVerification(false);
@@ -357,7 +365,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         return;
       }
 
-      setSuccessMessage(`Email verified! Welcome, Professor ${cleanName}. Opening your teacher workspace...`);
+      setSuccessMessage(`Welcome, Professor ${cleanName}! Opening your teacher workspace...`);
 
       const resolution = await resolveUserRole(cleanEmail, teacherPassword, auth.currentUser.uid);
       const teacherUser: AdminUser = resolution.user ? {
@@ -366,6 +374,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         role: 'teacher',
         roles: ['teacher'],
         teacherStatus: 'active',
+        assignedSubjects: verifiedSubject ? [verifiedSubject.name] : (resolution.user.assignedSubjects || []),
       } : {
         id: auth.currentUser.uid,
         uid: auth.currentUser.uid,
@@ -380,9 +389,24 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         registeredDate: new Date().toISOString(),
         emailVerified: true,
       };
+
+      if (rememberMe && typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(
+            'awkum_active_session',
+            JSON.stringify({
+              email: cleanEmail,
+              uid: auth.currentUser.uid,
+              role: 'teacher',
+              savedAt: Date.now(),
+            })
+          );
+        } catch (e) {}
+      }
+
       setTimeout(() => {
         onLoginSuccess(teacherUser, 'teacher');
-      }, 1000);
+      }, 700);
     } catch (err: any) {
       setIsCheckingTeacherVerification(false);
       setErrorMessage(err?.message || 'Error checking verification status.');
@@ -1147,7 +1171,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
                     <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                   ) : (
                     <>
-                      <span>Complete Registration & Verify Email</span>
+                      <span>Register & Unlock Teacher Workspace</span>
                       <ArrowRight className="w-4 h-4 stroke-[2.2]" />
                     </>
                   )}
@@ -1255,7 +1279,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       {branding.bottomImageEnabled && (branding.bottomImageUrl || '/images/awkum-campus-building.jpg') && (
         <div className="w-full relative mt-auto overflow-hidden pointer-events-none select-none z-10 flex flex-col justify-end">
           
-          {/* Building image container */}
+          {/* Building image container without waves */}
           <div className="relative w-full">
             {/* Soft top-edge feather blend into canvas */}
             <div className="absolute inset-x-0 top-0 h-10 sm:h-14 bg-linear-to-b from-[#FBF6EE] to-transparent z-10 pointer-events-none" />
@@ -1275,114 +1299,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
                 (e.currentTarget as HTMLElement).style.display = 'none';
               }}
             />
-
-            {/* FLOWING MULTI-LAYERED WAVE RIBBONS AT THE BOTTOM OF THE BUILDING */}
-            <div className="absolute bottom-0 inset-x-0 w-full h-[95px] sm:h-[130px] md:h-[155px] lg:h-[175px] pointer-events-none z-20 overflow-hidden">
-              <svg
-                viewBox="0 0 1440 260"
-                className="w-full h-full"
-                preserveAspectRatio="none"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-              >
-                <defs>
-                  {/* Primary deep chocolate gradient */}
-                  <linearGradient id="waveGradDeep" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stopColor="#25140B" />
-                    <stop offset="45%" stopColor="#43291B" />
-                    <stop offset="100%" stopColor="#301A0E" />
-                  </linearGradient>
-
-                  {/* Warm amber caramel gradient */}
-                  <linearGradient id="waveGradCaramel" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" stopColor="#A88B73" />
-                    <stop offset="45%" stopColor="#C9B098" />
-                    <stop offset="100%" stopColor="#96775F" />
-                  </linearGradient>
-
-                  {/* Golden-tan glowing ribbon gradient */}
-                  <linearGradient id="waveGradGold" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stopColor="#DFC8B2" />
-                    <stop offset="50%" stopColor="#B39379" />
-                    <stop offset="100%" stopColor="#8C6E56" />
-                  </linearGradient>
-
-                  {/* Silk champagne cream accent gradient */}
-                  <linearGradient id="waveGradCream" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" stopColor="#FFF9F2" stopOpacity="0.9" />
-                    <stop offset="50%" stopColor="#F5ECE0" stopOpacity="0.98" />
-                    <stop offset="100%" stopColor="#FFF9F2" stopOpacity="0.85" />
-                  </linearGradient>
-
-                  {/* Front dark chocolate wave */}
-                  <linearGradient id="waveGradFront" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" stopColor="#362014" />
-                    <stop offset="35%" stopColor="#4D3120" />
-                    <stop offset="75%" stopColor="#2B160C" />
-                    <stop offset="100%" stopColor="#1E0E06" />
-                  </linearGradient>
-
-                  {/* Soft atmospheric depth shadow */}
-                  <filter id="waveShadow" x="-5%" y="-20%" width="110%" height="145%" filterUnits="userSpaceOnUse">
-                    <feDropShadow dx="0" dy="-4" stdDeviation="5" floodColor="#180C06" floodOpacity="0.25" />
-                  </filter>
-                </defs>
-
-                {/* Layer 1: Ambient soft background wave surging from left */}
-                <path
-                  d="M0,170 C240,215 480,125 720,165 C960,205 1200,105 1440,145 V260 H0 Z"
-                  fill="url(#waveGradCaramel)"
-                  opacity="0.55"
-                />
-
-                {/* Layer 2: Rolling caramel-gold swell with sweeping crests */}
-                <path
-                  d="M0,135 C180,185 340,90 560,135 C780,180 1020,65 1260,110 C1340,125 1400,110 1440,100 V260 H0 Z"
-                  fill="url(#waveGradGold)"
-                  opacity="0.88"
-                />
-
-                {/* Layer 3: Silk cream accent ribbon along middle crest */}
-                <path
-                  d="M0,140 C180,190 340,95 560,140 C780,185 1020,70 1260,115 C1340,130 1400,115 1440,105 V260 H0 Z"
-                  fill="url(#waveGradCream)"
-                  opacity="0.92"
-                />
-
-                {/* Layer 4: Deep rich chocolate main surging wave with natural depth shadow */}
-                <path
-                  d="M0,150 C220,85 440,215 700,140 C960,65 1180,175 1440,115 V260 H0 Z"
-                  fill="url(#waveGradDeep)"
-                  filter="url(#waveShadow)"
-                />
-
-                {/* Layer 5: Fine champagne highlight contour tracing the chocolate crest */}
-                <path
-                  d="M0,152 C220,87 440,217 700,142 C960,67 1180,177 1440,117"
-                  stroke="url(#waveGradCream)"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  fill="none"
-                  opacity="0.8"
-                />
-
-                {/* Layer 6: Foreground undulating dark chocolate swell framing the bottom */}
-                <path
-                  d="M0,180 C260,230 520,150 780,190 C1040,230 1280,140 1440,170 V260 H0 Z"
-                  fill="url(#waveGradFront)"
-                />
-
-                {/* Layer 7: Golden rim highlight along the foreground curl */}
-                <path
-                  d="M0,182 C260,232 520,152 780,192 C1040,232 1280,142 1440,172"
-                  stroke="#DFC5AF"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  fill="none"
-                  opacity="0.5"
-                />
-              </svg>
-            </div>
           </div>
         </div>
       )}

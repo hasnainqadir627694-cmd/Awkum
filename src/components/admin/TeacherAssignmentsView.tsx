@@ -25,6 +25,7 @@ import {
   revokeSubjectTeacher,
   keepSubjectTeacherActive,
   subscribeToSubjectTeacherAssignment,
+  repairTeacherSubjectAssignments,
 } from '../../lib/subjectService';
 import {
   generateTeacherInvitation,
@@ -43,6 +44,7 @@ interface TeacherAssignmentsViewProps {
 }
 
 export const TeacherAssignmentsView: React.FC<TeacherAssignmentsViewProps> = ({
+  users = [],
   adminEmail = 'hasnainbuilds724656@gmail.com',
   onNavigateToSubjects,
   initialSelectedSubjectId = null,
@@ -67,8 +69,9 @@ export const TeacherAssignmentsView: React.FC<TeacherAssignmentsViewProps> = ({
   const [copiedPassword, setCopiedPassword] = useState(false);
   const [copiedFullBundle, setCopiedFullBundle] = useState(false);
 
-  // Revocation modal states
+  // Revocation and regeneration modal states
   const [showRevokeTeacherModal, setShowRevokeTeacherModal] = useState(false);
+  const [showRegenerateConfirmModal, setShowRegenerateConfirmModal] = useState(false);
   const [revokeReason, setRevokeReason] = useState('');
 
   // Status and feedback
@@ -86,6 +89,18 @@ export const TeacherAssignmentsView: React.FC<TeacherAssignmentsViewProps> = ({
     });
     return () => unsub();
   }, []);
+
+  // 1b. Proactively reconcile any registered faculty members to their curriculum subjects
+  useEffect(() => {
+    if (users && users.length > 0) {
+      const teachers = users.filter((u) => u.role === 'teacher' || u.roles?.includes('teacher'));
+      teachers.forEach((t) => {
+        if (t.email || t.uid) {
+          repairTeacherSubjectAssignments(t.uid, t.email).catch(() => {});
+        }
+      });
+    }
+  }, [users]);
 
   // 2. Subscribe to active assignment & invitation for the selected subject
   useEffect(() => {
@@ -741,135 +756,187 @@ export const TeacherAssignmentsView: React.FC<TeacherAssignmentsViewProps> = ({
                 /* ----------------------------------------------------------------- */
                 <div className="space-y-4">
                   {/* Current Active Invitation Details */}
+                  {/* Current Active Invitation Details */}
                   {(activeInvitation && activeInvitation.status !== 'revoked') || newlyGeneratedCredentials ? (
-                    <div className="p-5 bg-white border border-[#E6D8C7] rounded-2xl space-y-4 shadow-2xs">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#E6D8C7]">
-                        <div className="flex items-center gap-2">
-                          <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse" />
-                          <h3 className="font-bold text-sm text-[#38271C]">
-                            {activeInvitation?.status === 'reserved'
-                              ? 'Registration Started — Awaiting Email Verification'
-                              : activeInvitation?.status === 'claimed'
-                              ? 'Invitation Claimed & Active'
-                              : 'Active Invitation Awaiting Teacher Claim'}
-                          </h3>
-                        </div>
+                    (() => {
+                      const displayCode = newlyGeneratedCredentials?.code || activeInvitation?.invitationCode || '';
+                      const displayPassword = newlyGeneratedCredentials?.password || activeInvitation?.invitationPassword || '';
+                      const isClaimed = activeInvitation?.status === 'claimed';
+                      const isReserved =
+                        activeInvitation?.status === 'reserved' ||
+                        activeInvitation?.status === 'registration_pending_verification';
 
-                        <span className="text-[11px] text-[#806A56]">
-                          Created on {activeInvitation ? new Date(activeInvitation.createdAt).toLocaleDateString() : new Date().toLocaleDateString()} by{' '}
-                          <span className="font-mono">{activeInvitation?.createdBy || adminEmail}</span>
-                        </span>
-                      </div>
+                      return (
+                        <div className="p-5 bg-white border border-[#E6D8C7] rounded-2xl space-y-4 shadow-2xs">
+                          {/* Top Status Header */}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#E6D8C7]">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`w-2.5 h-2.5 rounded-full ${
+                                  isClaimed
+                                    ? 'bg-[#668064]'
+                                    : isReserved
+                                    ? 'bg-amber-500 animate-pulse'
+                                    : 'bg-emerald-500 animate-pulse'
+                                }`}
+                              />
+                              <h3 className="font-bold text-sm text-[#38271C]">
+                                {isReserved
+                                  ? 'Registration Triggered — Awaiting Email Verification'
+                                  : isClaimed
+                                  ? 'Invitation Claimed & Active'
+                                  : 'Active Invitation Awaiting Teacher Claim'}
+                              </h3>
+                            </div>
 
-                      {/* Code display card */}
-                      <div className="p-4 bg-[#F8F0E5] border border-[#E6D8C7] rounded-2xl space-y-2">
-                        <span className="text-[10px] font-bold text-[#806A56] uppercase tracking-wider block">
-                          Subject Invitation Code
-                        </span>
-                        <div className="flex items-center justify-between gap-3">
-                          <code className="font-mono text-xl sm:text-2xl font-extrabold text-[#493222] tracking-wider select-all">
-                            {newlyGeneratedCredentials?.code || activeInvitation?.invitationCode || 'INV-PENDING'}
-                          </code>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const codeToCopy = newlyGeneratedCredentials?.code || activeInvitation?.invitationCode || '';
-                              if (codeToCopy) {
-                                navigator.clipboard.writeText(codeToCopy);
-                                setCopiedCode(true);
-                                setTimeout(() => setCopiedCode(false), 2500);
-                              }
-                            }}
-                            className="px-3.5 py-2 bg-[#493222] hover:bg-[#38271C] text-white text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-                          >
-                            {copiedCode ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                            <span>{copiedCode ? 'Copied' : 'Copy Code'}</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Controlled Newly Generated Password Box (if just generated) */}
-                      {newlyGeneratedCredentials && (
-                        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-3 animate-in fade-in">
-                          <div className="flex items-center gap-2 text-emerald-900 font-bold text-xs">
-                            <Sparkles className="w-4 h-4 text-emerald-700" />
-                            <span>Fresh Credentials Generated — Deliver to Faculty Instructor</span>
+                            <span className="text-[11px] text-[#806A56]">
+                              Created on{' '}
+                              {activeInvitation
+                                ? new Date(activeInvitation.createdAt).toLocaleDateString()
+                                : new Date().toLocaleDateString()}{' '}
+                              by <span className="font-mono">{activeInvitation?.createdBy || adminEmail}</span>
+                            </span>
                           </div>
 
-                          <div className="space-y-2 text-xs">
-                            <div className="flex items-center justify-between p-2.5 bg-white rounded-xl border border-emerald-200">
-                              <span className="text-[#806A56]">Invitation Code:</span>
-                              <code className="font-mono font-bold text-sm text-[#493222]">
-                                {newlyGeneratedCredentials.code}
-                              </code>
+                          {/* Lifecycle State Callout if Reserved or Claimed */}
+                          {isReserved && (
+                            <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1 animate-in fade-in">
+                              <div className="flex items-center gap-2 font-bold text-amber-800">
+                                <Clock className="w-4 h-4 text-amber-600 shrink-0" />
+                                <span>Teacher Registration In Progress (Credentials Used)</span>
+                              </div>
+                              <p className="text-[11px] text-amber-800 leading-relaxed">
+                                A faculty member has entered this code and registered. Reserved for:{' '}
+                                <strong className="font-mono">{activeInvitation.reservedForEmail || activeInvitation.teacherEmail}</strong>
+                                {activeInvitation.claimedByName ? ` (${activeInvitation.claimedByName})` : ''}.
+                                As soon as they confirm their Gmail, this course unlocks automatically!
+                              </p>
                             </div>
-                            <div className="flex items-center justify-between p-2.5 bg-white rounded-xl border border-emerald-200">
-                              <span className="text-[#806A56]">One-Time Password:</span>
-                              <div className="flex items-center gap-2">
-                                <code className="font-mono font-bold text-sm text-[#493222] select-all">
-                                  {newlyGeneratedCredentials.password}
+                          )}
+
+                          {isClaimed && (
+                            <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 space-y-1 animate-in fade-in">
+                              <div className="flex items-center gap-2 font-bold text-emerald-800">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                                <span>Invitation Claimed and Consumed</span>
+                              </div>
+                              <p className="text-[11px] text-emerald-800 leading-relaxed">
+                                Claimed by{' '}
+                                <strong>
+                                  {activeInvitation.claimedByName || activeInvitation.teacherName || 'Faculty Instructor'}
+                                </strong>{' '}
+                                (<span className="font-mono">{activeInvitation.claimedByEmail || activeInvitation.teacherEmail}</span>).
+                              </p>
+                            </div>
+                          )}
+
+                          {/* Credentials Grid: Code AND Password */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {/* Code display card */}
+                            <div className="p-4 bg-[#F8F0E5] border border-[#E6D8C7] rounded-2xl space-y-2">
+                              <span className="text-[10px] font-bold text-[#806A56] uppercase tracking-wider block">
+                                Subject Invitation Code
+                              </span>
+                              <div className="flex items-center justify-between gap-3">
+                                <code className="font-mono text-lg sm:text-xl font-extrabold text-[#493222] tracking-wider select-all">
+                                  {displayCode || 'INV-PENDING'}
                                 </code>
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    navigator.clipboard.writeText(newlyGeneratedCredentials.password);
-                                    setCopiedPassword(true);
-                                    setTimeout(() => setCopiedPassword(false), 2500);
+                                    if (displayCode) {
+                                      navigator.clipboard.writeText(displayCode);
+                                      setCopiedCode(true);
+                                      setTimeout(() => setCopiedCode(false), 2500);
+                                    }
                                   }}
-                                  className="px-2.5 py-1 bg-[#493222] text-white text-[11px] font-bold rounded-lg cursor-pointer flex items-center gap-1"
+                                  className="px-3 py-1.5 bg-[#493222] hover:bg-[#38271C] text-white text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
                                 >
-                                  {copiedPassword ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                                  <span>{copiedPassword ? 'Copied' : 'Copy Password'}</span>
+                                  {copiedCode ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                                  <span>{copiedCode ? 'Copied' : 'Copy'}</span>
                                 </button>
+                              </div>
+                            </div>
+
+                            {/* Password display card (Persistent across logout/login) */}
+                            <div className="p-4 bg-[#F8F0E5] border border-[#E6D8C7] rounded-2xl space-y-2">
+                              <span className="text-[10px] font-bold text-[#806A56] uppercase tracking-wider block">
+                                One-Time Invitation Password
+                              </span>
+                              <div className="flex items-center justify-between gap-3">
+                                <code className="font-mono text-lg sm:text-xl font-extrabold text-[#493222] select-all">
+                                  {displayPassword || (isClaimed ? '•••••••••••• (Claimed)' : '••••••••••••')}
+                                </code>
+                                {displayPassword && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(displayPassword);
+                                      setCopiedPassword(true);
+                                      setTimeout(() => setCopiedPassword(false), 2500);
+                                    }}
+                                    className="px-3 py-1.5 bg-[#493222] hover:bg-[#38271C] text-white text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                                  >
+                                    {copiedPassword ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                                    <span>{copiedPassword ? 'Copied' : 'Copy'}</span>
+                                  </button>
+                                )}
                               </div>
                             </div>
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const msg = `AWKUM ClassHub Subject Teacher Invitation\nCourse: ${newlyGeneratedCredentials.subjectName}\nSubject Invitation Code: ${newlyGeneratedCredentials.code}\nInvitation Password: ${newlyGeneratedCredentials.password}\n\nInstructions:\n1. Open AWKUM ClassHub universal login screen.\n2. Enter the Code in Email/ID and Password in Password field.\n3. Complete registration to claim your teacher workspace.`;
-                              navigator.clipboard.writeText(msg);
-                              setCopiedFullBundle(true);
-                              setTimeout(() => setCopiedFullBundle(false), 3000);
-                            }}
-                            className="w-full py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-xs cursor-pointer"
-                          >
-                            {copiedFullBundle ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                            <span>{copiedFullBundle ? 'Full Invitation Bundle Copied!' : 'Copy Full Invitation Message for Teacher'}</span>
-                          </button>
+                          {/* Full Teacher Delivery Message Box */}
+                          {displayPassword && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const msg = `AWKUM ClassHub Subject Teacher Invitation\nCourse: ${selectedSubject.name} (${selectedSubject.code})\nSubject Invitation Code: ${displayCode}\nInvitation Password: ${displayPassword}\n\nInstructions for Faculty:\n1. Open AWKUM ClassHub universal login screen.\n2. In the Login form, enter the Code (${displayCode}) in Email/ID and Password (${displayPassword}) in Password field.\n3. Complete registration to unlock your teacher workspace.`;
+                                navigator.clipboard.writeText(msg);
+                                setCopiedFullBundle(true);
+                                setTimeout(() => setCopiedFullBundle(false), 3000);
+                              }}
+                              className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-xs cursor-pointer transition-colors"
+                            >
+                              {copiedFullBundle ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                              <span>
+                                {copiedFullBundle
+                                  ? 'Full Invitation Bundle Copied to Clipboard!'
+                                  : 'Copy Full Invitation Message for Teacher'}
+                              </span>
+                            </button>
+                          )}
+
+                          {/* Instructions & Actions */}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+                            <p className="text-[11px] text-[#806A56] max-w-md leading-relaxed">
+                              These credentials remain securely saved and will not change unless you explicitly regenerate them. The teacher enters this <strong>Invitation Code</strong> and <strong>Invitation Password</strong> to register and claim this course.
+                            </p>
+
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setShowRegenerateConfirmModal(true)}
+                                disabled={isSubmitting}
+                                className="px-3.5 py-2 bg-[#EFE3D3] hover:bg-[#E6D8C7] text-[#493222] text-xs font-bold rounded-xl border border-[#D8C7B4] flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs disabled:opacity-50"
+                              >
+                                <RefreshCw className={`w-3.5 h-3.5 ${isSubmitting ? 'animate-spin' : ''}`} />
+                                <span>Regenerate Credentials</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={handleRevokeInvitation}
+                                disabled={isSubmitting}
+                                className="px-3.5 py-2 bg-white hover:bg-red-50 text-red-700 hover:text-red-800 text-xs font-bold rounded-xl border border-red-200 transition-all cursor-pointer shadow-2xs disabled:opacity-50"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Revoke Invitation</span>
+                              </button>
+                            </div>
+                          </div>
                         </div>
-                      )}
-
-                      {/* Instructions & Actions */}
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
-                        <p className="text-[11px] text-[#806A56] max-w-md leading-relaxed">
-                          The teacher enters this <strong>Invitation Code</strong> and <strong>Invitation Password</strong> directly on the universal login screen to register and claim this course.
-                        </p>
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={handleGenerateInvitation}
-                            disabled={isSubmitting}
-                            className="px-3.5 py-2 bg-[#EFE3D3] hover:bg-[#E6D8C7] text-[#493222] text-xs font-bold rounded-xl border border-[#D8C7B4] flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs disabled:opacity-50"
-                          >
-                            <RefreshCw className={`w-3.5 h-3.5 ${isSubmitting ? 'animate-spin' : ''}`} />
-                            <span>Regenerate Credentials</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={handleRevokeInvitation}
-                            disabled={isSubmitting}
-                            className="px-3.5 py-2 bg-white hover:bg-red-50 text-red-700 hover:text-red-800 text-xs font-bold rounded-xl border border-red-200 transition-all cursor-pointer shadow-2xs disabled:opacity-50"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span>Revoke Invitation</span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
+                      );
+                    })()
                   ) : (
                     /* No active invitation exists yet */
                     <div className="p-8 bg-white border border-dashed border-[#E6D8C7] rounded-3xl text-center space-y-4">
@@ -1004,6 +1071,81 @@ export const TeacherAssignmentsView: React.FC<TeacherAssignmentsViewProps> = ({
                     <span>Confirm Revocation</span>
                   </>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* REGENERATE INVITATION CREDENTIALS CONFIRMATION MODAL                      */}
+      {/* ========================================================================= */}
+      {showRegenerateConfirmModal && selectedSubject && (
+        <div className="fixed inset-0 z-50 bg-[#2E1F14]/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-[#FFF9F1] border border-[#E6D8C7] rounded-3xl p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-[#E6D8C7]">
+              <div className="flex items-center gap-2 text-amber-800">
+                <div className="p-2 bg-amber-100 rounded-xl">
+                  <RefreshCw className="w-5 h-5 text-amber-800" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-[#38271C]">
+                    Regenerate Subject Credentials
+                  </h3>
+                  <p className="text-xs text-[#806A56]">
+                    Course: {selectedSubject.name} ({selectedSubject.code})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRegenerateConfirmModal(false)}
+                className="p-1.5 rounded-full hover:bg-[#EFE3D3] text-[#806A56] hover:text-[#38271C] cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs text-[#38271C]">
+              <p className="leading-relaxed">
+                Are you sure you want to generate brand new invitation credentials for <strong>{selectedSubject.name}</strong>?
+              </p>
+
+              <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl space-y-1.5 text-amber-900">
+                <span className="font-bold flex items-center gap-1.5 text-xs text-amber-900">
+                  <AlertCircle className="w-4 h-4 text-amber-700 shrink-0" />
+                  Previous Credentials Will Be Permanently Invalidated:
+                </span>
+                <p className="text-[11px] leading-relaxed">
+                  • The previous invitation code <code className="font-mono font-bold">{activeInvitation?.invitationCode || 'active code'}</code> will be immediately revoked.
+                </p>
+                <p className="text-[11px] leading-relaxed">
+                  • Any faculty member who has not completed registration will be unable to use the old password.
+                </p>
+                <p className="text-[11px] leading-relaxed">
+                  • New credentials will be permanently saved and will not vanish across logout or page refresh.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#E6D8C7]">
+              <button
+                type="button"
+                onClick={() => setShowRegenerateConfirmModal(false)}
+                className="px-4 py-2 bg-[#EFE3D3] hover:bg-[#E6D8C7] text-[#493222] text-xs font-bold rounded-xl transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRegenerateConfirmModal(false);
+                  handleGenerateInvitation();
+                }}
+                disabled={isSubmitting}
+                className="px-5 py-2 bg-[#493222] hover:bg-[#38271C] text-white text-xs font-bold rounded-xl shadow-xs flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+              >
+                <span>Confirm & Invalidate Previous</span>
               </button>
             </div>
           </div>

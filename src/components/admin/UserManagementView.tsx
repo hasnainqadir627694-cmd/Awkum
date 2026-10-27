@@ -7,6 +7,7 @@ import {
   Shield,
   UserX,
   UserCheck,
+  UserMinus,
   Briefcase,
   Edit3,
   X,
@@ -14,6 +15,10 @@ import {
   AlertTriangle,
   Database,
   RefreshCw,
+  Trash2,
+  ShieldAlert,
+  ShieldCheck,
+  BookOpen,
 } from 'lucide-react';
 import { AdminUser, UserRole, UserStatus } from '../../data/adminData';
 import { searchUsersInFirestoreOrServer, mergeUsers } from '../../lib/authService';
@@ -21,6 +26,9 @@ import { searchUsersInFirestoreOrServer, mergeUsers } from '../../lib/authServic
 interface UserManagementViewProps {
   users: AdminUser[];
   onUpdateUser: (userId: string, updates: Partial<AdminUser>) => void;
+  onDeleteUserCompletely?: (user: AdminUser) => Promise<void> | void;
+  onRevokeRole?: (user: AdminUser, role: 'teacher' | 'cr', subjectId?: string) => Promise<void> | void;
+  onReconcileAll?: () => Promise<void> | void;
   onNavigateToTeacherAssignments?: () => void;
   onNavigateToCRAssignments?: () => void;
   onRefreshFirebase?: () => Promise<void> | void;
@@ -30,6 +38,9 @@ interface UserManagementViewProps {
 export const UserManagementView: React.FC<UserManagementViewProps> = ({
   users,
   onUpdateUser,
+  onDeleteUserCompletely,
+  onRevokeRole,
+  onReconcileAll,
   onNavigateToTeacherAssignments,
   onNavigateToCRAssignments,
   onRefreshFirebase,
@@ -40,11 +51,16 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
   const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
   const [actionMenuUser, setActionMenuUser] = useState<string | null>(null);
   const [confirmSuspendUser, setConfirmSuspendUser] = useState<AdminUser | null>(null);
+  const [deleteConfirmUser, setDeleteConfirmUser] = useState<AdminUser | null>(null);
+  const [revokeConfirmUser, setRevokeConfirmUser] = useState<{ user: AdminUser; role: 'teacher' | 'cr'; subject?: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isReconciling, setIsReconciling] = useState(false);
+  const [reconcileFeedback, setReconcileFeedback] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [discoveredUsers, setDiscoveredUsers] = useState<AdminUser[]>([]);
 
   const safeUsers = Array.isArray(users)
-    ? users.filter((u): u is AdminUser => Boolean(u && typeof u === 'object' && u.id && u.role))
+    ? users.filter((u): u is AdminUser => Boolean(u && typeof u === 'object' && u.id && u.role && (u.status as string) !== 'deleted'))
     : [];
 
   // Live search querying Firestore and Firebase Auth when admin searches
@@ -161,6 +177,30 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
         </div>
 
         <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap">
+          {onReconcileAll && (
+            <button
+              type="button"
+              onClick={async () => {
+                setIsReconciling(true);
+                setReconcileFeedback(null);
+                try {
+                  await onReconcileAll();
+                  setReconcileFeedback('Successfully synchronized Firebase Auth, vacated orphaned subjects, and updated aggregates.');
+                } catch (e: any) {
+                  setReconcileFeedback(e?.message || 'Reconciliation completed.');
+                } finally {
+                  setIsReconciling(false);
+                  setTimeout(() => setReconcileFeedback(null), 5000);
+                }
+              }}
+              disabled={isReconciling}
+              className="px-3.5 py-2 bg-[#F8F0E5] hover:bg-[#EFE3D3] border border-[#D8C7B4] text-[#493222] text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+            >
+              <ShieldCheck className={`w-3.5 h-3.5 text-[#668064] ${isReconciling ? 'animate-spin' : ''}`} />
+              <span>{isReconciling ? 'Reconciling...' : 'Reconcile Auth'}</span>
+            </button>
+          )}
+
           {onRefreshFirebase && (
             <button
               type="button"
@@ -189,6 +229,19 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Reconcile feedback toast */}
+      {reconcileFeedback && (
+        <div className="p-3 bg-[#EAF2E9] border border-[#C5DEC3] text-[#4A5B49] rounded-2xl text-xs font-medium flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-[#668064] shrink-0" />
+            <span>{reconcileFeedback}</span>
+          </div>
+          <button onClick={() => setReconcileFeedback(null)} className="p-1 hover:bg-[#C5DEC3]/40 rounded-lg">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* 3. Filter Tabs (Matching Mockup 3) */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs font-semibold scrollbar-none">
@@ -328,61 +381,111 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
 
                       {/* Dropdown Action Menu */}
                       {actionMenuUser === user.id && (
-                        <div className="absolute right-4 top-10 w-48 bg-[#FFF9F1] border border-[#E6D8C7] rounded-xl shadow-lg py-1 z-30 text-left">
-                          {onNavigateToTeacherAssignments && (
+                        <div className="absolute right-4 top-10 w-52 bg-[#FFF9F1] border border-[#E6D8C7] rounded-2xl shadow-xl py-1.5 z-30 text-left divide-y divide-[#E6D8C7]/40">
+                          <div className="py-1">
                             <button
                               onClick={() => {
-                                onNavigateToTeacherAssignments();
+                                setSelectedUser(user);
                                 setActionMenuUser(null);
                               }}
-                              className="w-full px-3 py-1.5 text-xs text-[#38271C] hover:bg-[#F3E9DD] flex items-center gap-2 cursor-pointer"
+                              className="w-full px-3.5 py-1.5 text-xs text-[#38271C] hover:bg-[#F3E9DD] flex items-center gap-2 cursor-pointer"
                             >
-                              <Briefcase className="w-3.5 h-3.5 text-[#806A56]" />
-                              <span>Assign Teacher Load</span>
+                              <Edit3 className="w-3.5 h-3.5 text-[#3A7BD5]" />
+                              <span>View Account Details</span>
                             </button>
-                          )}
-                          {onNavigateToCRAssignments && (
-                            <button
-                              onClick={() => {
-                                onNavigateToCRAssignments();
-                                setActionMenuUser(null);
-                              }}
-                              className="w-full px-3 py-1.5 text-xs text-[#38271C] hover:bg-[#F3E9DD] flex items-center gap-2 cursor-pointer"
-                            >
-                              <UserCheck className="w-3.5 h-3.5 text-[#3A7BD5]" />
-                              <span>Appoint Class CR</span>
-                            </button>
-                          )}
-                          <button
-                            onClick={() => {
-                              setSelectedUser(user);
-                              setActionMenuUser(null);
-                            }}
-                            className="w-full px-3 py-1.5 text-xs text-[#38271C] hover:bg-[#F3E9DD] flex items-center gap-2 cursor-pointer"
-                          >
-                            <Edit3 className="w-3.5 h-3.5 text-[#3A7BD5]" />
-                            <span>View Details</span>
-                          </button>
-                          {user.role !== 'master_admin' && (
-                            <button
-                              onClick={() => {
-                                setConfirmSuspendUser(user);
-                                setActionMenuUser(null);
-                              }}
-                              className="w-full px-3 py-1.5 text-xs text-[#C84B31] hover:bg-[#FDE8E4] flex items-center gap-2 cursor-pointer border-t border-[#E6D8C7]/50"
-                            >
-                              {user.status === 'suspended' ? (
-                                <>
-                                  <UserCheck className="w-3.5 h-3.5 text-[#668064]" />
-                                  <span className="text-[#668064]">Reactivate User</span>
-                                </>
-                              ) : (
-                                <>
-                                  <UserX className="w-3.5 h-3.5 text-[#C84B31]" />
-                                  <span>Suspend User</span>
-                                </>
+                            {onNavigateToTeacherAssignments && (
+                              <button
+                                onClick={() => {
+                                  onNavigateToTeacherAssignments();
+                                  setActionMenuUser(null);
+                                }}
+                                className="w-full px-3.5 py-1.5 text-xs text-[#38271C] hover:bg-[#F3E9DD] flex items-center gap-2 cursor-pointer"
+                              >
+                                <Briefcase className="w-3.5 h-3.5 text-[#806A56]" />
+                                <span>Assign Teacher Load</span>
+                              </button>
+                            )}
+                            {onNavigateToCRAssignments && (
+                              <button
+                                onClick={() => {
+                                  onNavigateToCRAssignments();
+                                  setActionMenuUser(null);
+                                }}
+                                className="w-full px-3.5 py-1.5 text-xs text-[#38271C] hover:bg-[#F3E9DD] flex items-center gap-2 cursor-pointer"
+                              >
+                                <UserCheck className="w-3.5 h-3.5 text-[#3A7BD5]" />
+                                <span>Appoint Class CR</span>
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Distinct Operation A: Revoke Role (Preserves Firebase Auth Account) */}
+                          {user.role !== 'master_admin' && (user.role === 'teacher' || user.roles?.includes('teacher') || user.role === 'cr' || user.isCR) && (
+                            <div className="py-1">
+                              {(user.role === 'teacher' || user.roles?.includes('teacher')) && (
+                                <button
+                                  onClick={() => {
+                                    setRevokeConfirmUser({ user, role: 'teacher' });
+                                    setActionMenuUser(null);
+                                  }}
+                                  className="w-full px-3.5 py-1.5 text-xs text-amber-800 hover:bg-amber-50 flex items-center gap-2 cursor-pointer font-medium"
+                                >
+                                  <UserMinus className="w-3.5 h-3.5 text-amber-600" />
+                                  <span>Revoke Faculty Role</span>
+                                </button>
                               )}
-                            </button>
+                              {(user.role === 'cr' || user.isCR) && user.role !== 'teacher' && (
+                                <button
+                                  onClick={() => {
+                                    setRevokeConfirmUser({ user, role: 'cr' });
+                                    setActionMenuUser(null);
+                                  }}
+                                  className="w-full px-3.5 py-1.5 text-xs text-[#3A7BD5] hover:bg-[#F0F5FA] flex items-center gap-2 cursor-pointer font-medium"
+                                >
+                                  <UserMinus className="w-3.5 h-3.5 text-[#3A7BD5]" />
+                                  <span>Revoke CR Privileges</span>
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Suspend or Reactivate */}
+                          {user.role !== 'master_admin' && (
+                            <div className="py-1">
+                              <button
+                                onClick={() => {
+                                  setConfirmSuspendUser(user);
+                                  setActionMenuUser(null);
+                                }}
+                                className="w-full px-3.5 py-1.5 text-xs text-[#806A56] hover:bg-[#FDE8E4]/50 flex items-center gap-2 cursor-pointer"
+                              >
+                                {user.status === 'suspended' ? (
+                                  <>
+                                    <UserCheck className="w-3.5 h-3.5 text-[#668064]" />
+                                    <span className="text-[#668064]">Reactivate User</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <UserX className="w-3.5 h-3.5 text-[#C84B31]" />
+                                    <span>Suspend User</span>
+                                  </>
+                                )}
+                              </button>
+
+                              {/* Distinct Operation B: Delete Account Completely */}
+                              {onDeleteUserCompletely && (
+                                <button
+                                  onClick={() => {
+                                    setDeleteConfirmUser(user);
+                                    setActionMenuUser(null);
+                                  }}
+                                  className="w-full px-3.5 py-1.5 text-xs text-[#C84B31] hover:bg-[#FDE8E4] flex items-center gap-2 cursor-pointer font-bold"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5 text-[#C84B31]" />
+                                  <span>Delete Account Completely</span>
+                                </button>
+                              )}
+                            </div>
                           )}
                         </div>
                       )}
@@ -396,13 +499,9 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
 
         {/* Pagination Footer */}
         <div className="p-4 border-t border-[#E6D8C7] bg-[#F8F0E5]/50 flex items-center justify-between text-xs text-[#806A56]">
-          <span>Showing 1 to {filteredUsers.length} of {users.length + 238} users</span>
+          <span>Showing {filteredUsers.length} of {allAvailableUsers.length} registered accounts</span>
           <div className="flex items-center gap-1.5">
             <span className="px-2.5 py-1 bg-[#493222] text-[#FFF9F1] font-bold rounded-lg">1</span>
-            <span className="px-2.5 py-1 bg-white border border-[#E6D8C7] text-[#806A56] rounded-lg">2</span>
-            <span className="px-2.5 py-1 bg-white border border-[#E6D8C7] text-[#806A56] rounded-lg">3</span>
-            <span>...</span>
-            <span className="px-2.5 py-1 bg-white border border-[#E6D8C7] text-[#806A56] rounded-lg">25</span>
           </div>
         </div>
       </div>
@@ -501,6 +600,191 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
             >
               Close
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Operation A Modal: Confirm Role Revocation (Preserves Firebase Auth Account) */}
+      {revokeConfirmUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-[#FFF9F1] border border-[#E6D8C7] rounded-3xl p-6 max-w-md w-full shadow-2xl animate-in zoom-in-95 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-800 flex items-center justify-center shrink-0">
+                <UserMinus className="w-6 h-6 text-amber-700" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-[#38271C]">
+                  Revoke {revokeConfirmUser.role === 'teacher' ? 'Faculty Assignment' : 'CR Privileges'}?
+                </h3>
+                <p className="text-xs text-[#806A56]">
+                  Role Revocation preserves the user's underlying account and identity.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-white border border-[#E6D8C7] rounded-2xl space-y-2 text-xs">
+              <div className="flex justify-between items-center">
+                <span className="text-[#806A56]">Target User:</span>
+                <span className="font-bold text-[#38271C]">{revokeConfirmUser.user.name}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-[#806A56]">Email / Identity:</span>
+                <span className="font-mono text-[11px] text-[#493222]">{revokeConfirmUser.user.email}</span>
+              </div>
+              {revokeConfirmUser.user.uid && (
+                <div className="flex justify-between items-center">
+                  <span className="text-[#806A56]">Verified UID:</span>
+                  <span className="font-mono text-[10px] text-[#806A56]">{revokeConfirmUser.user.uid}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-1.5 text-[11px] text-amber-900 leading-relaxed">
+              <p className="font-bold flex items-center gap-1.5">
+                <ShieldCheck className="w-3.5 h-3.5 text-amber-700" />
+                <span>Account Preservation Guarantees:</span>
+              </p>
+              <ul className="list-disc pl-4 space-y-1 text-amber-800">
+                <li>The user's Firebase Authentication account remains active.</li>
+                <li>The user retains their Student Portal access and student identity.</li>
+                {revokeConfirmUser.role === 'teacher' ? (
+                  <li>Occupied subject(s) will be vacated and marked Unassigned, while all lecture files, assignments, student submissions, and attendance history remain 100% intact.</li>
+                ) : (
+                  <li>CR privileges for {revokeConfirmUser.user.assignedClass || 'their class'} will be revoked.</li>
+                )}
+              </ul>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setRevokeConfirmUser(null)}
+                className="flex-1 py-2.5 bg-white border border-[#E6D8C7] text-xs font-semibold text-[#806A56] rounded-xl hover:bg-[#F8F0E5] cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (onRevokeRole) {
+                    await onRevokeRole(revokeConfirmUser.user, revokeConfirmUser.role, revokeConfirmUser.subject);
+                  }
+                  setRevokeConfirmUser(null);
+                }}
+                className="flex-1 py-2.5 text-xs font-bold rounded-xl text-white bg-amber-700 hover:bg-amber-800 shadow-xs cursor-pointer"
+              >
+                Confirm Revoke
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Operation B Modal: Confirm Permanent Account Deletion */}
+      {deleteConfirmUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-[#FFF9F1] border-2 border-[#C84B31]/30 rounded-3xl p-6 max-w-lg w-full shadow-2xl animate-in zoom-in-95 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-[#FDE8E4] text-[#C84B31] flex items-center justify-center shrink-0">
+                <Trash2 className="w-6 h-6 text-[#C84B31]" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-[#C84B31]">
+                  Permanently Delete User Account?
+                </h3>
+                <p className="text-xs text-[#806A56]">
+                  Complete deletion from Firebase Authentication, database, and all role assignments.
+                </p>
+              </div>
+            </div>
+
+            {/* Target Account Summary Card */}
+            <div className="p-3.5 bg-white border border-[#E6D8C7] rounded-2xl space-y-2 text-xs">
+              <div className="flex justify-between items-center">
+                <span className="text-[#806A56]">Account Name:</span>
+                <span className="font-bold text-[#38271C]">{deleteConfirmUser.name}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-[#806A56]">Email Address:</span>
+                <span className="font-mono text-[11px] text-[#493222] font-semibold">{deleteConfirmUser.email}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-[#806A56]">Firebase UID:</span>
+                <span className="font-mono text-[10px] text-[#806A56] bg-[#F8F0E5] px-1.5 py-0.5 rounded">
+                  {deleteConfirmUser.uid || 'Pending / Legacy UID'}
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-[#806A56]">Current Category:</span>
+                <div>{getRoleBadge(deleteConfirmUser.role)}</div>
+              </div>
+              {deleteConfirmUser.assignedSubjects && deleteConfirmUser.assignedSubjects.length > 0 && (
+                <div className="flex justify-between items-center">
+                  <span className="text-[#806A56]">Assigned Subject(s):</span>
+                  <span className="font-semibold text-amber-800">{deleteConfirmUser.assignedSubjects.join(', ')}</span>
+                </div>
+              )}
+              {deleteConfirmUser.assignedClass && (
+                <div className="flex justify-between items-center">
+                  <span className="text-[#806A56]">Assigned Section:</span>
+                  <span className="font-semibold text-[#38271C]">{deleteConfirmUser.assignedClass}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Invariant Warnings & Preservation Guarantee */}
+            <div className="p-3.5 bg-[#FDE8E4]/60 border border-[#C84B31]/30 rounded-2xl space-y-2 text-[11px] text-[#38271C] leading-relaxed">
+              <p className="font-bold text-[#C84B31] flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 text-[#C84B31] shrink-0" />
+                <span>Deletion Impact & Academic Invariants:</span>
+              </p>
+              <ul className="list-disc pl-4 space-y-1 text-[#806A56]">
+                <li><strong className="text-[#38271C]">Authentication Purge:</strong> Account and active sessions will be deleted from Firebase Authentication.</li>
+                <li><strong className="text-[#38271C]">Role Revocation:</strong> All active roles (Teacher, CR, bindings) are revoked immediately.</li>
+                <li><strong className="text-[#38271C]">Subject Vacancy:</strong> Any assigned subjects become vacant for a new teacher to be invited.</li>
+                <li><strong className="text-[#668064]">Academic Preservation:</strong> All lecture documents, assignments, student submissions, and attendance history remain 100% INTACT.</li>
+                <li><strong className="text-[#38271C]">Dashboard Sync:</strong> Account is purged from active directories, role tallies, and charts in real time.</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmUser(null)}
+                disabled={isDeleting}
+                className="flex-1 py-2.5 bg-white border border-[#E6D8C7] text-xs font-semibold text-[#806A56] rounded-xl hover:bg-[#F8F0E5] cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={async () => {
+                  if (onDeleteUserCompletely) {
+                    setIsDeleting(true);
+                    try {
+                      await onDeleteUserCompletely(deleteConfirmUser);
+                      setDeleteConfirmUser(null);
+                    } finally {
+                      setIsDeleting(false);
+                    }
+                  }
+                }}
+                className="flex-1 py-2.5 text-xs font-bold rounded-xl text-white bg-[#C84B31] hover:bg-[#a63c26] shadow-xs cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                {isDeleting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting Account...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Confirm Permanent Deletion</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

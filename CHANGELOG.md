@@ -3,6 +3,61 @@
 All notable changes to the AWKUM ClassHub codebase are documented in this file.  
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.11.0] - 2026-10-26
+
+### Added & Redesigned
+- **Complete Redesign & Implementation of CR Schedule Planner (`CRSchedulePlannerView.tsx`)**:
+  - Replaced the complicated, fragmented interface with an organized 4-section layout:
+    1. **Current Weekly Schedule**: Overview card with live publication status, validity window (`startDate` to `endDate`), semester, total configured classes, and active weekdays.
+    2. **Edit Timetable**: Intuitive weekday segmented strip (`Mon` to `Sun`) with per-day class tallies, quick "+ Add Class", and "Copy Day" schedule duplication.
+    3. **Weekly Preview**: 7-day recurring overview chart displaying class sequences and teaching hours.
+    4. **Review & Publish**: Pre-publication checklist modal with atomic Firestore persistence, version archiving, and audit log generation.
+  - **Eliminated Manual Course Code & Title Entry**:
+    - Completely removed manual text fields for Course Code and Subject Title.
+    - Added an authoritative dropdown populated directly from Firebase `subjects` collection, scoped to the CR's authorized section with real-time search filtering.
+    - Guaranteed that CRs cannot create duplicate or unregistered subjects.
+  - **Automatic Active Teacher Resolution**:
+    - Selecting a curriculum subject automatically resolves its authoritative teacher assignment from Firebase (`assignedTeacher`, `teacherUid`, `teacherEmail`).
+    - Rendered as a read-only information badge with verified status; unassigned courses display clear "No Active Teacher Assigned" warnings.
+  - **Tactile Vertical Scrolling Wheel Time Picker (`WheelTimePicker.tsx`)**:
+    - Replaced static time presets with independent interactive vertical wheel pickers for Class Start Time and Class End Time (Hour, Minute, AM/PM).
+    - Features centered selection lenses, optical gradient masks, touch drag with snap, mouse wheel scrolling, keyboard navigation, and micro-steppers.
+  - **Robust Time Engine Upgrades (`scheduleEngine.ts`)**:
+    - Upgraded `timeStringToMinutes` to seamlessly handle both 12-hour AM/PM and 24-hour formats with exact midnight/noon handling.
+    - Added `formatMinutesTo12Hour` and `parse12HourTime` helpers.
+  - **Secondary Utilities Segregation**:
+    - Single-day cancellations and reschedules (`Schedule Overrides`) preserved in dedicated exceptions panel without altering future recurring weeks.
+    - Validity period and historical version rollbacks maintained in clean secondary tabs.
+
+---
+
+## [2.10.0] - 2026-10-26
+
+### Added & Fixed
+- **Complete Firebase Account Lifecycle & Deletion Architecture**:
+  - Implemented backend endpoint `POST /api/admin/delete-auth-user` authorizing Master Admin (`hasnainbuilds724656@gmail.com`) to delete accounts from Firebase Authentication, clean server memory maps, and invalidate sessions.
+  - Implemented `deleteUserAccountCompletely` in `src/lib/authService.ts`:
+    - Atomically revokes all active roles (`crAssignments`, `teacherAssignments`, `roleAssignments`).
+    - Releases and vacates all assigned curriculum subjects via `vacateSubjectsForTeacher`, setting status to `Unassigned` while **preserving 100% of syllabus documents, assignments, student submissions, and attendance history**.
+    - Invalidates active reservations and claimed invitations in `subjectInvitations`.
+    - Backs up full record to `users_backup_archive` with audit metadata and purges from active `users` collection.
+    - Recalculates `aggregates/userStats` without the deleted account and syncs in real time.
+    - Emits `classhub_user_deleted` custom event and writes an immutable entry to `audit_logs`.
+- **Distinct Operation Model in Admin Panel (`UserManagementView.tsx`)**:
+  - **Operation A (Role Revocation)**: Revokes Faculty or CR role while preserving the user's Firebase Auth account and Student role. Vacates subjects safely.
+  - **Operation B (Permanent Account Deletion)**: Explicit, art-directed confirmation modal displaying account name, email, verified Firebase UID, current role, and assigned subjects, with detailed impact warnings and academic preservation invariants.
+- **Automated Multi-Layer Auth Reconciliation**:
+  - Added endpoint `POST /api/admin/reconcile-auth` to clean expired reservations and stale states.
+  - Added `reconcileAllAccountsWithAuth` in `src/lib/authService.ts` and toolbar "Reconcile Auth" button in `UserManagementView.tsx`.
+  - Reconciles Firestore user profiles against active identities, archives orphaned documents, vacates orphaned teacher courses, and recomputes exact aggregates.
+- **New UID Immunity**:
+  - If a deleted email re-registers, Firebase issues a new UID. Hardened `resolveUserRole` and `normalizeUserRecord` so new UIDs start with a clean slate (student) and never inherit past roles or subject assignments based on email alone.
+- **Strict Metric Calculations & Real-Time Aggregates**:
+  - Fixed hardcoded `+ 238` offset in user table footer.
+  - Updated `computeLocalStats` and `AdminDashboardOverview.tsx` to strictly filter out accounts with `status: 'deleted'` and maintain zero-overlap separation between teachers and students.
+
+---
+
 ## [2.9.0] - 2026-10-25
 
 ### Added

@@ -138,14 +138,69 @@ export interface LiveScheduleState {
 }
 
 /**
- * Converts "HH:mm" 24h time to minutes from midnight
+ * Converts "HH:mm" (24h) or "hh:mm AM/PM" (12h) string to total minutes from midnight
  */
 export function timeStringToMinutes(timeStr?: string): number {
   if (!timeStr) return 0;
-  const parts = timeStr.trim().split(':');
+  const clean = timeStr.trim();
+
+  // Check for 12-hour format with AM/PM (e.g. "09:00 AM", "02:30 PM", "12:15 PM")
+  const match12 = clean.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([APap][Mm])$/);
+  if (match12) {
+    let hours = parseInt(match12[1], 10) || 0;
+    const minutes = parseInt(match12[2], 10) || 0;
+    const period = match12[3].toUpperCase();
+    if (period === 'PM' && hours < 12) {
+      hours += 12;
+    } else if (period === 'AM' && hours === 12) {
+      hours = 0;
+    }
+    return hours * 60 + minutes;
+  }
+
+  // Check for 24-hour format (e.g. "09:00", "14:30")
+  const parts = clean.split(':');
   const h = parseInt(parts[0], 10) || 0;
   const m = parseInt(parts[1], 10) || 0;
   return h * 60 + m;
+}
+
+/**
+ * Formats total minutes from midnight to canonical "hh:mm A" string (e.g. "09:00 AM")
+ */
+export function formatMinutesTo12Hour(totalMinutes: number): string {
+  const norm = Math.max(0, Math.floor(totalMinutes)) % (24 * 60);
+  const h24 = Math.floor(norm / 60);
+  const m = norm % 60;
+  const period = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${h12.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')} ${period}`;
+}
+
+/**
+ * Parses any time string into its 12-hour components: hour (1-12), minute (0-59), period ('AM' | 'PM')
+ */
+export function parse12HourTime(timeStr?: string): { hour: number; minute: number; period: 'AM' | 'PM' } {
+  if (!timeStr) return { hour: 9, minute: 0, period: 'AM' };
+  const clean = timeStr.trim();
+
+  const match12 = clean.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([APap][Mm])$/);
+  if (match12) {
+    let hour = parseInt(match12[1], 10) || 12;
+    if (hour < 1 || hour > 12) hour = 12;
+    let minute = parseInt(match12[2], 10) || 0;
+    if (minute < 0 || minute > 59) minute = 0;
+    const period = match12[3].toUpperCase() === 'PM' ? 'PM' : 'AM';
+    return { hour, minute, period };
+  }
+
+  // Fallback for 24h format (e.g. "14:30")
+  const parts = clean.split(':');
+  const h24 = parseInt(parts[0], 10) || 0;
+  const m = parseInt(parts[1], 10) || 0;
+  const period = h24 >= 12 ? 'PM' : 'AM';
+  const hour = h24 % 12 === 0 ? 12 : h24 % 12;
+  return { hour, minute: Math.max(0, Math.min(59, m)), period };
 }
 
 /**

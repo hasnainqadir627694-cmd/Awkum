@@ -157,11 +157,12 @@ export const EmailVerificationPendingScreen: React.FC<EmailVerificationPendingSc
       } else {
         setStatusMessage({
           type: 'error',
-          text: err?.message || 'Unable to send verification email. Please check your network connection.',
+          text: err?.message || 'Unable to send verification email. Please check your network connection or Firebase configuration.',
         });
       }
     }
   };
+
 
   const handleSignOut = async () => {
     if (auth) {
@@ -286,6 +287,7 @@ export const EmailVerificationPendingScreen: React.FC<EmailVerificationPendingSc
                 </>
               )}
             </button>
+
           </div>
 
           {/* Quick Troubleshooting Guide */}

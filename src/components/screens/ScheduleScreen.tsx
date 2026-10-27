@@ -19,6 +19,7 @@ import {
   ChevronRight,
   ShieldCheck,
   AlertTriangle,
+  GraduationCap,
 } from 'lucide-react';
 import { ScheduleItem } from '../../data/portalData';
 import {
@@ -350,7 +351,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
             return (
               <div
                 key={item.id}
-                className={`p-3.5 rounded-2xl border transition-all shadow-xs ${
+                className={`p-3 rounded-2xl border transition-all shadow-xs ${
                   item.isCancelled
                     ? 'bg-rose-50/50 border-rose-200 opacity-80'
                     : isCurrentClass
@@ -360,69 +361,78 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                     : 'bg-[#FFF9F1] border-[#E6D8C7]'
                 }`}
               >
-                <div className="flex items-center justify-between">
-                  {/* Left: Time & Icon & Details */}
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-10 h-10 rounded-xl bg-[#F8F0E5] border border-[#E6D8C7] flex items-center justify-center shrink-0">
-                      {getSubjectIcon(item.subjectId)}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[11px] font-bold text-[#806A56]">
-                          {item.startTime} - {item.endTime}
+                <div className="flex items-start justify-between gap-2">
+                  {/* Left / Main Details */}
+                  <div className="min-w-0 flex-1 space-y-1">
+                    {/* Top Row: Time Badge & Status Badges */}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#F8F0E5] border border-[#E6D8C7] text-[11px] font-bold text-[#493222]">
+                        <Clock className="w-3 h-3 text-[#806A56]" />
+                        {item.startTime} - {item.endTime}
+                      </span>
+                      {isCurrentClass && (
+                        <span className="text-[10px] font-bold text-white bg-[#668064] px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                          <Radio className="w-2.5 h-2.5 animate-pulse" />
+                          Live Now
                         </span>
-                        {isCurrentClass && (
-                          <span className="text-[10px] font-bold text-white bg-[#668064] px-1.5 py-0.2 rounded flex items-center gap-1">
-                            <Radio className="w-2.5 h-2.5 animate-pulse" />
-                            Live Now
-                          </span>
-                        )}
-                        {isNextClass && (
-                          <span className="text-[10px] font-bold text-[#668064] bg-[#EAF2E9] px-1.5 py-0.2 rounded">
-                            Next Class
-                          </span>
-                        )}
-                        {item.isCancelled && (
-                          <span className="text-[10px] font-bold text-rose-700 bg-rose-100 px-1.5 py-0.2 rounded">
-                            Cancelled for Today
-                          </span>
-                        )}
-                        {item.isRescheduled && (
-                          <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.2 rounded">
-                            Rescheduled
-                          </span>
-                        )}
-                      </div>
-                      <h3
-                        className={`text-sm font-bold mt-0.5 truncate ${
-                          item.isCancelled ? 'line-through text-rose-800' : 'text-[#38271C]'
-                        }`}
-                      >
-                        {item.subjectName}
-                      </h3>
-                      <div className="flex items-center gap-2 text-[11px] text-[#806A56] mt-0.5 truncate">
-                        <span className="flex items-center gap-1">
-                          <MapPin className="w-3 h-3" />
-                          <span>{item.room}</span>
-                        </span>
-                        <span>·</span>
-                        <span>{item.teacher}</span>
-                      </div>
-                      {item.cancelReason && (
-                        <p className="text-[10px] font-medium text-rose-600 mt-1">
-                          Reason: {item.cancelReason}
-                        </p>
                       )}
-                      {item.rescheduleReason && (
-                        <p className="text-[10px] font-medium text-amber-600 mt-1">
-                          Note: {item.rescheduleReason}
-                        </p>
+                      {isNextClass && (
+                        <span className="text-[10px] font-bold text-[#668064] bg-[#EAF2E9] px-1.5 py-0.5 rounded-full">
+                          Next Class
+                        </span>
+                      )}
+                      {item.isCancelled && (
+                        <span className="text-[10px] font-bold text-rose-700 bg-rose-100 px-1.5 py-0.5 rounded-full">
+                          Cancelled
+                        </span>
+                      )}
+                      {item.isRescheduled && (
+                        <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">
+                          Rescheduled
+                        </span>
                       )}
                     </div>
+
+                    {/* Subject Name & Code */}
+                    <h3
+                      className={`text-sm font-extrabold tracking-tight pt-0.5 ${
+                        item.isCancelled ? 'line-through text-rose-800' : 'text-[#38271C]'
+                      }`}
+                    >
+                      {item.subjectName}
+                      {item.subjectCode && (
+                        <span className="ml-1.5 text-xs font-semibold text-[#806A56]">
+                          ({item.subjectCode})
+                        </span>
+                      )}
+                    </h3>
+
+                    {/* Teacher & Room Details (Separately identifiable with icons) */}
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-0.5 text-xs text-[#806A56]">
+                      <div className="flex items-center gap-1 min-w-0">
+                        <GraduationCap className="w-3.5 h-3.5 text-[#493222] shrink-0" />
+                        <span className="truncate font-medium text-[#38271C]">{item.teacher}</span>
+                      </div>
+                      <div className="flex items-center gap-1 min-w-0">
+                        <MapPin className="w-3.5 h-3.5 text-[#493222] shrink-0" />
+                        <span className="truncate font-medium text-[#38271C]">{item.room}</span>
+                      </div>
+                    </div>
+
+                    {item.cancelReason && (
+                      <p className="text-[10px] font-medium text-rose-600 mt-0.5">
+                        Reason: {item.cancelReason}
+                      </p>
+                    )}
+                    {item.rescheduleReason && (
+                      <p className="text-[10px] font-medium text-amber-600 mt-0.5">
+                        Note: {item.rescheduleReason}
+                      </p>
+                    )}
                   </div>
 
-                  {/* Right: Reminder Bell */}
-                  <div className="flex items-center gap-1 shrink-0 ml-2">
+                  {/* Right: Reminder Action Button */}
+                  <div className="shrink-0 pt-0.5">
                     <button
                       onClick={() => {
                         setReminderModalClass({

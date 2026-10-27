@@ -27,6 +27,8 @@ import { CRNotifyTeacherView } from './CRNotifyTeacherView';
 import { CRAttendanceCorrectionModal } from './CRAttendanceCorrectionModal';
 import { CRProfileView } from './CRProfileView';
 import { CRSchedulePlannerView } from './CRSchedulePlannerView';
+import { CRWeeklyReportView } from './CRWeeklyReportView';
+import { CRMonthlyReportView } from './CRMonthlyReportView';
 
 interface CRLayoutProps {
   currentUser: AdminUser;
@@ -36,7 +38,7 @@ interface CRLayoutProps {
   onLogout: () => void;
 }
 
-export type CRTabType = 'dashboard' | 'attendance' | 'schedule' | 'students' | 'history' | 'notify' | 'profile';
+export type CRTabType = 'dashboard' | 'attendance' | 'schedule' | 'students' | 'history' | 'weekly' | 'monthly' | 'notify' | 'profile';
 
 export const CRLayout: React.FC<CRLayoutProps> = ({
   currentUser,
@@ -171,7 +173,7 @@ export const CRLayout: React.FC<CRLayoutProps> = ({
           {activeTab === 'schedule' && (
             <CRSchedulePlannerView
               assignedClass={assignedClass}
-              crUser={{ id: currentUser.id, name: currentUser.name, email: currentUser.email }}
+              crUser={{ id: currentUser.id, name: currentUser.name, email: currentUser.email, uid: currentUser.uid }}
               onBackToDashboard={() => setActiveTab('dashboard')}
             />
           )}
@@ -191,6 +193,24 @@ export const CRLayout: React.FC<CRLayoutProps> = ({
               sessions={allSessions}
               onBackToDashboard={() => setActiveTab('dashboard')}
               onOpenSessionCorrection={(sess) => setCorrectingSession(sess)}
+            />
+          )}
+
+          {activeTab === 'weekly' && (
+            <CRWeeklyReportView
+              assignedClass={assignedClass}
+              roster={roster}
+              sessions={allSessions}
+              onBackToDashboard={() => setActiveTab('dashboard')}
+            />
+          )}
+
+          {activeTab === 'monthly' && (
+            <CRMonthlyReportView
+              assignedClass={assignedClass}
+              roster={roster}
+              sessions={allSessions}
+              onBackToDashboard={() => setActiveTab('dashboard')}
             />
           )}
 

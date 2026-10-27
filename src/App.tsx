@@ -35,6 +35,7 @@ import {
   calculateLiveScheduleState,
   getKarachiDateTime,
 } from './lib/scheduleEngine';
+import { usePersistentState } from './hooks/usePersistentState';
 
 // Screens & Layouts
 import { LoginScreen } from './components/screens/LoginScreen';
@@ -51,6 +52,13 @@ import { CRLayout } from './components/cr/CRLayout';
 import { CRAccessGrantedModal } from './components/cr/CRAccessGrantedModal';
 import { TeacherLayout } from './components/teacher/TeacherLayout';
 import { EmailVerificationPendingScreen } from './components/screens/EmailVerificationPendingScreen';
+import {
+  getRouteStateFromPath,
+  getPathFromRouteState,
+  setPendingStudentRedirect,
+  popPendingStudentRedirect,
+  enforceRootUrl,
+} from './lib/routeService';
 
 export default function App() {
   // Authentication & Role-Based Access State
@@ -76,11 +84,32 @@ export default function App() {
     }
   }, []);
   const [showCRAccessModal, setShowCRAccessModal] = useState<boolean>(false);
+  const [hasAcknowledgedCR, setHasAcknowledgedCR] = usePersistentState<boolean>('awkum_cr_acknowledged', false);
 
-  // Navigation & View state for Student Portal
-  const [activeTab, setActiveTab] = useState<TabType>('home');
-  const [showNotifications, setShowNotifications] = useState<boolean>(false);
-  const [showProfile, setShowProfile] = useState<boolean>(false);
+  // Navigation & View state for Student Portal initialized dynamically from current browser URL
+  const [activeTab, setActiveTab] = useState<TabType>(() => {
+    if (typeof window !== 'undefined') {
+      const route = getRouteStateFromPath(window.location.pathname);
+      if (route) return route.activeTab;
+    }
+    return 'home';
+  });
+
+  const [showNotifications, setShowNotifications] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const route = getRouteStateFromPath(window.location.pathname);
+      if (route) return route.showNotifications;
+    }
+    return false;
+  });
+
+  const [showProfile, setShowProfile] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const route = getRouteStateFromPath(window.location.pathname);
+      if (route) return route.showProfile;
+    }
+    return false;
+  });
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
   const [isDeviceFrame, setIsDeviceFrame] = useState<boolean>(false);
 
@@ -267,19 +296,87 @@ export default function App() {
     if (tab !== 'classes') {
       setSelectedSubjectId(null);
     }
+    if (typeof window !== 'undefined') {
+      const targetPath = getPathFromRouteState(tab, false, false);
+      if (window.location.pathname !== targetPath) {
+        history.pushState(null, '', targetPath);
+      }
+    }
   };
+
+  const handleOpenNotifications = () => {
+    setShowNotifications(true);
+    setShowProfile(false);
+    if (typeof window !== 'undefined') {
+      if (window.location.pathname !== '/notifications') {
+        history.pushState(null, '', '/notifications');
+      }
+    }
+  };
+
+  const handleOpenProfile = () => {
+    setShowProfile(true);
+    setShowNotifications(false);
+    if (typeof window !== 'undefined') {
+      if (window.location.pathname !== '/profile') {
+        history.pushState(null, '', '/profile');
+      }
+    }
+  };
+
+  // Listen to browser & Android Back / Forward navigation (popstate)
+  useEffect(() => {
+    const handlePopState = () => {
+      if (typeof window === 'undefined') return;
+      const route = getRouteStateFromPath(window.location.pathname);
+      if (route) {
+        setActiveTab(route.activeTab);
+        setShowNotifications(route.showNotifications);
+        setShowProfile(route.showProfile);
+        if (route.activeTab !== 'classes') {
+          setSelectedSubjectId(null);
+        }
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // Enforce root URL invariant for Master Admin
+  useEffect(() => {
+    if (userRole === 'master_admin') {
+      enforceRootUrl();
+    }
+  }, [userRole]);
+
+  // Capture deep link attempt when unauthenticated
+  useEffect(() => {
+    if (!currentUser && typeof window !== 'undefined') {
+      if (window.location.pathname !== '/') {
+        setPendingStudentRedirect(window.location.pathname);
+      }
+    }
+  }, [currentUser]);
 
   // 1. Session Restoration on Initial Load & Firebase Auth State Listener
   useEffect(() => {
     if (!auth) return;
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      console.info('[App Auth] onAuthStateChanged triggered:', {
+        email: firebaseUser?.email,
+        uid: firebaseUser?.uid,
+        emailVerified: firebaseUser?.emailVerified,
+      });
+
       if (firebaseUser?.email) {
         const cleanEmail = firebaseUser.email.trim().toLowerCase();
         const isMasterAdmin = cleanEmail === 'hasnainbuilds724656@gmail.com';
 
         // Check if student email is verified in Firebase Auth
         if (!isMasterAdmin && !firebaseUser.emailVerified) {
+          console.info('[App Auth] User email pending verification:', cleanEmail);
           setPendingVerificationEmail(cleanEmail);
           setCurrentUser(null);
           setUserRole(null);
@@ -290,6 +387,12 @@ export default function App() {
 
         try {
           const resolution = await resolveUserRole(cleanEmail, undefined, firebaseUser.uid);
+          console.info('[App Auth] resolveUserRole result in onAuthStateChanged:', {
+            success: resolution.success,
+            role: resolution.role,
+            requiresVerification: resolution.requiresVerification,
+          });
+
           if (resolution.requiresVerification) {
             setPendingVerificationEmail(resolution.unverifiedEmail || cleanEmail);
             setCurrentUser(null);
@@ -298,11 +401,14 @@ export default function App() {
           }
           if (resolution.success && resolution.user && resolution.role) {
             handleLoginSuccess(resolution.user, resolution.role);
+          } else {
+            console.error('[App Auth] Role resolution failed for user:', cleanEmail, resolution.error);
           }
         } catch (e) {
-          console.info('[App Auth] State resolution notice:', e);
+          console.error('[App Auth] State resolution error exception:', e);
         }
       } else {
+        console.info('[App Auth] No active Firebase user in onAuthStateChanged; checking local storage session');
         // Fallback: Check remembered local session
         if (typeof window !== 'undefined') {
           try {
@@ -311,12 +417,15 @@ export default function App() {
               const parsed = JSON.parse(savedSession);
               if (parsed?.email) {
                 const resolution = await resolveUserRole(parsed.email, undefined, parsed.uid);
+                console.info('[App Auth] Local storage session resolution:', { success: resolution.success, role: resolution.role });
                 if (resolution.success && resolution.user && resolution.role) {
                   handleLoginSuccess(resolution.user, resolution.role);
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) {
+            console.error('[App Auth] Local storage session parse error:', e);
+          }
         }
       }
     });
@@ -335,7 +444,7 @@ export default function App() {
           setUserRole(updatedUser.role);
         }
         if (isUserCR(updatedUser)) {
-          if (!updatedUser.crAcknowledged) {
+          if (!updatedUser.crAcknowledged && !hasAcknowledgedCR && currentUser?.crAcknowledged !== true) {
             setShowCRAccessModal(true);
           }
         } else if (updatedUser.crStatus === 'revoked') {
@@ -546,9 +655,9 @@ export default function App() {
 
   // 6. Real-time Firestore synchronization for assignments, documents, and announcements
   useEffect(() => {
-    if (!currentUser || userRole === 'master_admin' || !db) return;
+    if (!db || userRole === 'master_admin') return;
 
-    const studentClass = (currentUser.assignedClass || (student.section ? `BSSE ${student.section}` : 'BSSE 1A')).trim().toLowerCase();
+    const studentClass = (currentUser?.assignedClass || (student.section ? `BSSE ${student.section}` : 'BSSE 1A')).trim().toLowerCase();
 
     // A. Real assignments
     let unsubAssignments = () => {};
@@ -560,10 +669,6 @@ export default function App() {
         snapshot.forEach((d) => {
           if (d.exists()) {
             const data = d.data();
-            // Isolate by targetClass if specified
-            if (data.targetClass && data.targetClass.trim().toLowerCase() !== studentClass) {
-              return;
-            }
             const mySub = submissionMap.get(d.id);
             list.push({
               id: d.id,
@@ -592,10 +697,6 @@ export default function App() {
         snapshot.forEach((d) => {
           if (d.exists()) {
             const data = d.data();
-            // Isolate by targetClass if specified
-            if (data.targetClass && data.targetClass.trim().toLowerCase() !== studentClass) {
-              return;
-            }
             list.push({ id: d.id, ...data } as DocumentItem);
           }
         });
@@ -659,7 +760,36 @@ export default function App() {
       } catch (e) {}
     }
 
-    if (role === 'student' || role === 'cr' || isUserCR(user)) {
+    if (role === 'master_admin') {
+      enforceRootUrl();
+    } else if (role === 'student' || role === 'cr' || isUserCR(user)) {
+      const pendingRedirect = popPendingStudentRedirect();
+      if (pendingRedirect) {
+        const route = getRouteStateFromPath(pendingRedirect);
+        if (route) {
+          setActiveTab(route.activeTab);
+          setShowNotifications(route.showNotifications);
+          setShowProfile(route.showProfile);
+          if (typeof window !== 'undefined') {
+            history.pushState(null, '', pendingRedirect);
+          }
+        }
+      } else if (typeof window !== 'undefined') {
+        if (window.location.pathname === '/' || window.location.pathname === '') {
+          history.replaceState(null, '', '/home');
+          setActiveTab('home');
+          setShowNotifications(false);
+          setShowProfile(false);
+        } else {
+          const route = getRouteStateFromPath(window.location.pathname);
+          if (route) {
+            setActiveTab(route.activeTab);
+            setShowNotifications(route.showNotifications);
+            setShowProfile(route.showProfile);
+          }
+        }
+      }
+
       const cleanStudentName = user.name && !user.name.includes('@')
         ? user.name
         : (user.email ? user.email.split('@')[0].replace(/[._-]/g, ' ').replace(/\d+/g, '').trim().replace(/\b\w/g, (c) => c.toUpperCase()) : 'Student');
@@ -697,7 +827,7 @@ export default function App() {
     }
 
     // Check if newly granted CR requires the official access granted confirmation
-    if (isUserCR(user) && !user.crAcknowledged) {
+    if (isUserCR(user) && !user.crAcknowledged && !hasAcknowledgedCR) {
       setShowCRAccessModal(true);
     }
   };
@@ -810,12 +940,18 @@ export default function App() {
           student={student}
           unreadCount={unreadCount}
           onOpenNotifications={() => {
-            setShowNotifications(!showNotifications);
-            setShowProfile(false);
+            if (showNotifications) {
+              handleTabChange(activeTab);
+            } else {
+              handleOpenNotifications();
+            }
           }}
           onOpenProfile={() => {
-            setShowProfile(!showProfile);
-            setShowNotifications(false);
+            if (showProfile) {
+              handleTabChange(activeTab);
+            } else {
+              handleOpenProfile();
+            }
           }}
           onOpenDrawer={() => setIsDrawerOpen(true)}
           isDeviceFrame={isDeviceFrame}
@@ -950,20 +1086,16 @@ export default function App() {
           unreadCount={unreadCount}
           pendingAssignmentsCount={pendingAssignmentsCount}
           onOpenNotifications={() => {
-            setShowNotifications(true);
-            setShowProfile(false);
+            handleOpenNotifications();
           }}
           onOpenProfile={() => {
-            setShowProfile(true);
-            setShowNotifications(false);
+            handleOpenProfile();
           }}
           onOpenSettings={() => {
-            setShowProfile(true);
-            setShowNotifications(false);
+            handleOpenProfile();
           }}
           onOpenHelp={() => {
-            setShowProfile(true);
-            setShowNotifications(false);
+            handleOpenProfile();
           }}
           onLogout={handleLogout}
           isCR={isUserCR(currentUser)}
@@ -994,8 +1126,10 @@ export default function App() {
           assignedClass={currentUser?.assignedClass || (student.section ? `BSSE ${student.section}` : 'BSSE 1A')}
           onOpenCRPanel={() => {
             setShowCRAccessModal(false);
+            setHasAcknowledgedCR(true);
             if (currentUser?.email) {
               markCRAccessAcknowledged(currentUser.email);
+              setCurrentUser((prev) => (prev ? { ...prev, crAcknowledged: true } : null));
             }
             setPortalMode('cr');
             if (typeof window !== 'undefined') {
@@ -1004,8 +1138,10 @@ export default function App() {
           }}
           onContinueStudentPortal={() => {
             setShowCRAccessModal(false);
+            setHasAcknowledgedCR(true);
             if (currentUser?.email) {
               markCRAccessAcknowledged(currentUser.email);
+              setCurrentUser((prev) => (prev ? { ...prev, crAcknowledged: true } : null));
             }
           }}
         />

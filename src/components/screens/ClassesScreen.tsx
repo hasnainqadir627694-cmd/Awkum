@@ -128,8 +128,42 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
       ) : (
         <div className="space-y-2.5">
           {filteredSubjects.map((subject) => {
-            const docCount = documents.filter((d) => d.subjectId === subject.id).length;
-            const asgCount = assignments.filter((a) => a.subjectId === subject.id).length;
+            const subjId = subject.id?.toLowerCase() || '';
+            const subjName = subject.name?.toLowerCase() || '';
+            const subjCode = subject.code?.toLowerCase() || '';
+            const subjFullName = subject.fullName?.toLowerCase() || '';
+
+            const docCount = documents.filter((d) => {
+              const dSubId = (d.subjectId || '').toLowerCase();
+              const dSubName = (d.subjectName || '').toLowerCase();
+              const dSubj = ((d as any).subject || '').toLowerCase();
+
+              return (
+                dSubId === subjId ||
+                dSubId === subjCode ||
+                dSubName === subjName ||
+                subjName.includes(dSubName) ||
+                dSubName.includes(subjName) ||
+                (subjCode && (dSubId.includes(subjCode) || dSubName.includes(subjCode))) ||
+                (dSubj && (dSubj === subjName || dSubj.includes(subjName) || subjName.includes(dSubj)))
+              );
+            }).length;
+
+            const asgCount = assignments.filter((a) => {
+              const aSubId = (a.subjectId || '').toLowerCase();
+              const aSubName = (a.subjectName || '').toLowerCase();
+              const aSubj = ((a as any).subject || '').toLowerCase();
+
+              return (
+                aSubId === subjId ||
+                aSubId === subjCode ||
+                aSubName === subjName ||
+                subjName.includes(aSubName) ||
+                aSubName.includes(subjName) ||
+                (subjCode && (aSubId.includes(subjCode) || aSubName.includes(subjCode))) ||
+                (aSubj && (aSubj === subjName || aSubj.includes(subjName) || subjName.includes(aSubj)))
+              );
+            }).length;
 
             return (
               <div

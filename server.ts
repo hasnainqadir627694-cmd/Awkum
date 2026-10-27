@@ -1067,6 +1067,7 @@ async function startServer() {
     assignedClass?: string;
     creditHours: number;
     invitationCode: string;
+    invitationPassword?: string;
     passwordHash: string;
     status: 'active' | 'reserved' | 'claimed' | 'revoked';
     createdAt: string;
@@ -1213,6 +1214,7 @@ async function startServer() {
         assignedClass: resolvedClass,
         creditHours: resolvedCredits,
         invitationCode,
+        invitationPassword,
         passwordHash,
         status: 'active',
         createdAt: nowIso,
@@ -1261,6 +1263,7 @@ async function startServer() {
             assignedClass: resolvedClass,
             creditHours: resolvedCredits,
             invitationCode,
+            invitationPassword,
             passwordHash,
             status: 'active',
             createdAt: nowIso,
@@ -1322,6 +1325,7 @@ async function startServer() {
         assignedClass: req.body?.assignedClass || '',
         creditHours: Number(req.body?.creditHours) || 3,
         invitationCode: fallbackCode,
+        invitationPassword: fallbackPass,
         passwordHash: fallbackHash,
         status: 'active',
         createdAt: nowIso,
@@ -1367,8 +1371,7 @@ async function startServer() {
 
       if (matching.length > 0) {
         matching.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        const { passwordHash, ...safeData } = matching[0];
-        return res.json({ invitation: safeData });
+        return res.json({ invitation: matching[0] });
       }
 
       // Fallback query Firestore if adminDb is available
@@ -1392,8 +1395,7 @@ async function startServer() {
 
           if (!snap.empty) {
             const data = snap.docs[0].data();
-            const { passwordHash, ...safeData } = data;
-            return res.json({ invitation: safeData });
+            return res.json({ invitation: data });
           }
         } catch (dbErr: any) {
           console.info('[Get Invitation] Notice querying Firestore:', dbErr?.message || dbErr);
@@ -1404,6 +1406,18 @@ async function startServer() {
     } catch (err: any) {
       console.error('[Get Invitation Error]:', err);
       return res.status(500).json({ error: err?.message || 'Server error fetching invitation.' });
+    }
+  });
+
+  /**
+   * Protected Master Admin Operation: Fetch all subject invitations with active state.
+   */
+  app.get('/api/teacher-invitations/all', async (_req, res) => {
+    try {
+      const list = Array.from(serverTeacherInvitations.values());
+      return res.json({ invitations: list });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || 'Failed to list invitations' });
     }
   });
 
@@ -1744,6 +1758,22 @@ async function startServer() {
             revocationReason: null,
             lastConfirmedActiveAt: nowIso,
           });
+
+          // Ensure teacherAssignments doc is written for RBAC sync
+          const teacherDocId = `teacher_${cleanEmail.replace(/[@.]/g, '_')}`;
+          const taRef = adminDb.collection('teacherAssignments').doc(teacherDocId);
+          batch.set(taRef, {
+            id: teacherDocId,
+            uid: cleanUid,
+            email: cleanEmail,
+            name: cleanName,
+            panelType: 'teacher',
+            assignedSubjects: [invData.subjectName || invData.subjectCode || invData.subjectId],
+            assignedClass: invData.assignedClass || '',
+            status: 'active',
+            grantedAt: nowIso,
+            grantedBy: 'Subject Invitation Claim',
+          }, { merge: true });
 
           const userRefUid = adminDb.collection('users').doc(cleanUid);
           const userRefEmail = adminDb.collection('users').doc(cleanEmail.replace(/[@.]/g, '_'));
@@ -2797,6 +2827,149 @@ CRITICAL EXTRACTION RULES:
     } catch (err: any) {
       console.error('[Schedule AI Server Error]:', err);
       return res.status(500).json({ error: err?.message || 'Failed to analyze timetable image with AI.' });
+    }
+  });
+
+  // =========================================================================
+  // ADMIN ACCOUNT LIFECYCLE & DELETION ENDPOINTS
+  // =========================================================================
+
+  /**
+   * Delete an account completely from Firebase Authentication and server memory state.
+   * Strictly authorized to Master Administrator only.
+   */
+  app.post('/api/admin/delete-auth-user', async (req, res) => {
+    try {
+      const { adminEmail, targetUid, targetEmail, reason = 'Admin Account Deletion' } = req.body;
+      const cleanAdmin = (adminEmail || '').trim().toLowerCase();
+      const cleanTargetEmail = (targetEmail || '').trim().toLowerCase();
+      const cleanTargetUid = (targetUid || '').trim();
+
+      if (cleanAdmin !== MASTER_ADMIN_EMAIL.toLowerCase()) {
+        return res.status(403).json({ error: 'Unauthorized: Only Master Administrator can delete user accounts.' });
+      }
+
+      if (!cleanTargetEmail && !cleanTargetUid) {
+        return res.status(400).json({ error: 'Missing targetUid or targetEmail for deletion.' });
+      }
+
+      if (cleanTargetEmail === MASTER_ADMIN_EMAIL.toLowerCase()) {
+        return res.status(400).json({ error: 'Safety constraint: Master Administrator account cannot be deleted.' });
+      }
+
+      let authDeleted = false;
+      let authError: string | null = null;
+
+      // 1. Delete from Firebase Authentication via Admin SDK if initialized
+      if (adminAuth && cleanTargetUid) {
+        try {
+          await adminAuth.deleteUser(cleanTargetUid);
+          authDeleted = true;
+          console.log(`[Server Auth] Successfully deleted user ${cleanTargetUid} (${cleanTargetEmail}) from Firebase Authentication.`);
+        } catch (err: any) {
+          authError = err?.message || String(err);
+          console.info(`[Server Auth] Notice deleting auth user ${cleanTargetUid}:`, authError);
+          // If user not found, they were already deleted from Firebase Auth
+          if (authError && (authError.includes('auth/user-not-found') || authError.includes('no user record'))) {
+            authDeleted = true;
+          }
+        }
+      }
+
+      // 2. Revoke any server-authoritative CR assignments in memory
+      for (const [key, assignment] of serverCRAssignments.entries()) {
+        if (
+          (cleanTargetUid && assignment.uid === cleanTargetUid) ||
+          (cleanTargetEmail && assignment.email.toLowerCase() === cleanTargetEmail)
+        ) {
+          assignment.status = 'revoked';
+          assignment.revokedAt = new Date().toISOString();
+          assignment.revokedBy = cleanAdmin;
+          assignment.revocationReason = `Account deleted: ${reason}`;
+          serverCRAssignments.set(key, assignment);
+        }
+      }
+
+      // 3. Invalidate/release any server-authoritative teacher invitations claimed or reserved by this user
+      for (const [code, inv] of serverTeacherInvitations.entries()) {
+        const matchesUser =
+          (cleanTargetUid && (inv.claimedByUid === cleanTargetUid || inv.reservedForUid === cleanTargetUid)) ||
+          (cleanTargetEmail && (inv.claimedByEmail?.toLowerCase() === cleanTargetEmail || inv.reservedForEmail?.toLowerCase() === cleanTargetEmail));
+
+        if (matchesUser) {
+          if (inv.status === 'reserved') {
+            // Release back to active
+            inv.status = 'active';
+            inv.reservedForEmail = undefined;
+            inv.reservedForUid = undefined;
+            inv.reservedAt = undefined;
+          } else if (inv.status === 'claimed') {
+            // Vacate invitation
+            inv.status = 'revoked';
+            inv.revokedAt = new Date().toISOString();
+            inv.revokedBy = cleanAdmin;
+            inv.revocationReason = `Teacher account deleted: ${reason}`;
+          }
+          serverTeacherInvitations.set(code, inv);
+        }
+      }
+      persistServerTeacherInvitations();
+
+      console.log(`[Server Auth] Account deletion processed for ${cleanTargetEmail} (UID: ${cleanTargetUid}).`);
+
+      return res.json({
+        success: true,
+        authDeleted,
+        authNotice: authError,
+        targetUid: cleanTargetUid,
+        targetEmail: cleanTargetEmail,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      console.error('[Server Auth Deletion Error]:', err);
+      return res.status(500).json({ error: err?.message || 'Server error deleting user account.' });
+    }
+  });
+
+  /**
+   * Reconcile server authentication maps and active invitation statuses.
+   */
+  app.post('/api/admin/reconcile-auth', async (req, res) => {
+    try {
+      const { adminEmail } = req.body;
+      const cleanAdmin = (adminEmail || '').trim().toLowerCase();
+
+      if (cleanAdmin !== MASTER_ADMIN_EMAIL.toLowerCase()) {
+        return res.status(403).json({ error: 'Unauthorized: Only Master Administrator can trigger reconciliation.' });
+      }
+
+      // Clean expired reservations older than 2 hours in server invitations
+      const now = Date.now();
+      let releasedReservations = 0;
+      for (const [, inv] of serverTeacherInvitations.entries()) {
+        if (inv.status === 'reserved' && inv.reservedAt) {
+          const reservedTime = new Date(inv.reservedAt).getTime();
+          if (now - reservedTime > 2 * 60 * 60 * 1000) {
+            inv.status = 'active';
+            inv.reservedForEmail = undefined;
+            inv.reservedForUid = undefined;
+            inv.reservedAt = undefined;
+            releasedReservations++;
+          }
+        }
+      }
+      if (releasedReservations > 0) {
+        persistServerTeacherInvitations();
+      }
+
+      return res.json({
+        success: true,
+        releasedReservations,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      console.error('[Server Reconcile Error]:', err);
+      return res.status(500).json({ error: err?.message || 'Server error reconciling authentication state.' });
     }
   });
 

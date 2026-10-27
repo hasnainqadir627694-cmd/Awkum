@@ -193,13 +193,16 @@ export const SubjectsManagementView: React.FC<SubjectsManagementViewProps> = ({
     }
   };
 
-  const handleDeleteSubject = async (subj: SubjectConfig) => {
-    if (!window.confirm(`Are you sure you want to remove subject ${subj.name} (${subj.code})?`)) return;
+  const [subjectToDelete, setSubjectToDelete] = useState<SubjectConfig | null>(null);
+
+  const confirmDeleteSubject = async () => {
+    if (!subjectToDelete) return;
     setIsSaving(true);
-    const res = await removeCurriculumSubject(subj.id, adminEmail);
+    const res = await removeCurriculumSubject(subjectToDelete.id, adminEmail);
     setIsSaving(false);
+    setSubjectToDelete(null);
     if (res.success) {
-      setSuccessToast(`Subject ${subj.name} removed.`);
+      setSuccessToast(`Subject ${subjectToDelete.name} removed / deactivated successfully.`);
       setTimeout(() => setSuccessToast(''), 3000);
     } else {
       setErrorMessage(res.error || 'Failed to remove subject.');
@@ -365,7 +368,7 @@ export const SubjectsManagementView: React.FC<SubjectsManagementViewProps> = ({
                             </button>
                           )}
                           <button
-                            onClick={() => handleDeleteSubject(subj)}
+                            onClick={() => setSubjectToDelete(subj)}
                             className="p-1 text-[#806A56] hover:text-[#C84B31] rounded-lg hover:bg-[#FDE8E4] transition-colors cursor-pointer"
                             title="Remove Subject"
                           >
@@ -574,6 +577,57 @@ export const SubjectsManagementView: React.FC<SubjectsManagementViewProps> = ({
                 className="px-5 py-2 bg-[#493222] text-white text-xs font-bold rounded-xl cursor-pointer"
               >
                 Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Subject Deletion Warning Confirmation */}
+      {subjectToDelete && (
+        <div className="fixed inset-0 z-50 bg-[#2E1F14]/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-[#FFF9F1] border border-[#E6D8C7] rounded-3xl p-6 w-full max-w-md shadow-2xl relative space-y-4 animate-in fade-in zoom-in-95">
+            <button
+              onClick={() => setSubjectToDelete(null)}
+              className="absolute right-4 top-4 text-[#806A56] hover:text-[#38271C] cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-[#FDE8E4] border border-[#F5C2B8] text-[#C84B31] flex items-center justify-center shrink-0">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <div>
+                <h2 className="text-base font-bold text-[#38271C]">Delete Subject</h2>
+                <p className="text-xs text-[#806A56] mt-0.5">
+                  Confirm removal or deactivation of test subject
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-[#F8F0E5] p-3.5 rounded-2xl border border-[#E6D8C7] space-y-1.5 text-xs text-[#38271C]">
+              <div className="font-bold">{subjectToDelete.name} ({subjectToDelete.code})</div>
+              <p className="text-[#806A56] text-[11px] leading-relaxed">
+                If this subject has associated student submissions, assignments, or lectures, it will be safely deactivated to preserve referential integrity and academic history. If clean, it will be permanently removed.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setSubjectToDelete(null)}
+                className="px-4 py-2 border border-[#D8C7B4] rounded-xl text-xs font-bold text-[#806A56] hover:bg-white cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isSaving}
+                onClick={confirmDeleteSubject}
+                className="px-5 py-2 bg-[#C84B31] hover:bg-[#A73B24] text-xs font-bold text-white rounded-xl flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {isSaving ? <span>Removing...</span> : <span>Yes, Remove / Deactivate Subject</span>}
               </button>
             </div>
           </div>

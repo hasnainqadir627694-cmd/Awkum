@@ -15,6 +15,10 @@ import {
   RefreshCw,
   Mail,
   Building,
+  KeyRound,
+  CheckCircle2,
+  AlertCircle,
+  X,
 } from 'lucide-react';
 import { AdminUser, SubjectConfig } from '../../data/adminData';
 import { AssignmentItem, DocumentItem, NoticeItem } from '../../data/portalData';
@@ -35,7 +39,8 @@ import {
   subscribeToTeacherIncomingAlerts,
   TeacherAlertRecord,
 } from '../../lib/teacherAlertService';
-import { subscribeToTeacherAssignedSubjects } from '../../lib/subjectService';
+import { subscribeToTeacherAssignedSubjects, repairTeacherSubjectAssignments } from '../../lib/subjectService';
+import { claimTeacherInvitation, validateInvitationCredentials } from '../../lib/teacherInvitationService';
 import { getEnrolledStudentsForClass, ClassStudentItem } from '../../data/classRosterData';
 
 interface TeacherLayoutProps {
@@ -75,6 +80,96 @@ export const TeacherLayout: React.FC<TeacherLayoutProps> = ({
   const [notices, setNotices] = useState<NoticeItem[]>([]);
   const [roster, setRoster] = useState<ClassStudentItem[]>([]);
   const [incomingAlerts, setIncomingAlerts] = useState<TeacherAlertRecord[]>([]);
+
+  // Self-healing & Direct Subject Claiming state for faculty
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState<boolean>(false);
+  const [showLinkCodeModal, setShowLinkCodeModal] = useState<boolean>(false);
+  const [linkCodeInput, setLinkCodeInput] = useState<string>('');
+  const [linkPasswordInput, setLinkPasswordInput] = useState<string>('');
+  const [linkLoading, setLinkLoading] = useState<boolean>(false);
+  const [linkError, setLinkError] = useState<string>('');
+  const [linkSuccess, setLinkSuccess] = useState<string>('');
+
+  const handleCheckUpdates = async () => {
+    setIsCheckingUpdates(true);
+    try {
+      const repaired = await repairTeacherSubjectAssignments(currentUser.uid, currentUser.email || '');
+      if (repaired.length > 0) {
+        setAssignedSubjectsList(repaired);
+        setSelectedSubject((prev) => prev || repaired[0]);
+      }
+    } catch (e) {
+      console.info('[Teacher Layout] Check updates notice:', e);
+    } finally {
+      setIsCheckingUpdates(false);
+    }
+  };
+
+  const handleClaimSubjectDirectly = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLinkError('');
+    setLinkSuccess('');
+    const cleanCode = linkCodeInput.trim().toUpperCase();
+    const cleanPass = linkPasswordInput.trim();
+
+    if (!cleanCode || !cleanPass) {
+      setLinkError('Please enter both Subject Invitation Code and Invitation Password.');
+      return;
+    }
+
+    setLinkLoading(true);
+    try {
+      const verifyRes = await validateInvitationCredentials(cleanCode, cleanPass);
+      if (!verifyRes.success || !verifyRes.invitation) {
+        setLinkLoading(false);
+        setLinkError(verifyRes.error || 'Invalid subject invitation credentials. Please check details.');
+        return;
+      }
+
+      const claimRes = await claimTeacherInvitation({
+        invitationCode: cleanCode,
+        invitationPassword: cleanPass,
+        teacherUid: currentUser.uid || '',
+        teacherEmail: currentUser.email || '',
+        teacherName: currentUser.name || 'Faculty Member',
+        subjectId: verifyRes.invitation.subjectId,
+        subjectName: verifyRes.invitation.subjectName,
+        subjectCode: verifyRes.invitation.subjectCode,
+        assignedClass: verifyRes.invitation.assignedClass,
+      });
+
+      if (!claimRes.success) {
+        setLinkLoading(false);
+        setLinkError(claimRes.error || 'Failed to link subject.');
+        return;
+      }
+
+      setLinkLoading(false);
+      setLinkSuccess(`Successfully assigned as managing teacher for ${verifyRes.invitation.subjectName}!`);
+
+      const repaired = await repairTeacherSubjectAssignments(currentUser.uid, currentUser.email);
+      if (repaired.length > 0) {
+        setAssignedSubjectsList(repaired);
+        setSelectedSubject(repaired[0]);
+      }
+
+      setTimeout(() => {
+        setShowLinkCodeModal(false);
+      }, 1000);
+    } catch (err: any) {
+      setLinkLoading(false);
+      setLinkError(err?.message || 'Error claiming subject invitation.');
+    }
+  };
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (assignedSubjectsList.length === 0) {
+        handleCheckUpdates();
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, []);
 
   // 1. Subscribe to teacher's assigned subjects dynamically from Cloud Firestore
   useEffect(() => {

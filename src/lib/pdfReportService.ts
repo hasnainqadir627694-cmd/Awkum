@@ -214,3 +214,140 @@ export async function markReportGenerated(session: AttendanceSession): Promise<v
     }
   }
 }
+
+/**
+ * Generates and downloads Weekly Attendance Report PDF in landscape format
+ */
+export function generateWeeklyAttendancePDF(
+  classId: string,
+  startDate: string,
+  endDate: string,
+  year: string,
+  roster: { id: string; name: string; rollNumber: string }[],
+  sessions: AttendanceSession[]
+): void {
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const filename = `AWKUM_Weekly_Attendance_${classId.replace(/\s+/g, '_')}_${startDate}_${endDate}.pdf`;
+
+  doc.setFillColor(73, 50, 34);
+  doc.rect(0, 0, pageWidth, 24, 'F');
+  doc.setTextColor(255, 249, 241);
+  doc.setFont('times', 'bold');
+  doc.setFontSize(15);
+  doc.text('ABDUL WALI KHAN UNIVERSITY MARDAN', pageWidth / 2, 9, { align: 'center' });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.text(`Weekly Attendance Report · Class: ${classId} · Range: ${startDate} - ${endDate}, ${year}`, pageWidth / 2, 17, { align: 'center' });
+
+  const tableBody = roster.map((st, index) => {
+    let presentCount = 0;
+    let absentCount = 0;
+    sessions.forEach(s => {
+      const rec = s.records[st.rollNumber];
+      if (rec?.status === 'present') presentCount++;
+      else if (rec) absentCount++;
+    });
+    const total = sessions.length;
+    const rate = total > 0 ? Math.round((presentCount / total) * 100) : 0;
+    return [index + 1, st.rollNumber, st.name, presentCount, absentCount, `${rate}%`];
+  });
+
+  autoTable(doc, {
+    startY: 32,
+    margin: { left: 14, right: 14, bottom: 20 },
+    head: [['S.No', 'Roll Number', 'Student Full Name', 'Total Present', 'Total Absent', 'Weekly Rate']],
+    body: tableBody,
+    theme: 'plain',
+    headStyles: { fillColor: [73, 50, 34], textColor: [255, 249, 241], fontSize: 8.5 },
+    bodyStyles: { fontSize: 8, textColor: [56, 39, 28] },
+    alternateRowStyles: { fillColor: [248, 240, 229] },
+    didDrawPage: (data) => {
+      const pageStr = `Page ${data.pageNumber} of ${doc.getNumberOfPages()}`;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(128, 106, 86);
+      doc.text('AWKUM ClassHub · Official Weekly Attendance Summary', 14, pageHeight - 8);
+      doc.text(pageStr, pageWidth - 14, pageHeight - 8, { align: 'right' });
+    },
+  });
+
+  const blob = doc.output('blob');
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+/**
+ * Generates and downloads Monthly Attendance Report PDF in landscape format
+ */
+export function generateMonthlyAttendancePDF(
+  classId: string,
+  monthName: string,
+  year: string,
+  roster: { id: string; name: string; rollNumber: string }[],
+  sessions: AttendanceSession[]
+): void {
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const filename = `AWKUM_Monthly_Attendance_${classId.replace(/\s+/g, '_')}_${monthName}_${year}.pdf`;
+
+  doc.setFillColor(73, 50, 34);
+  doc.rect(0, 0, pageWidth, 24, 'F');
+  doc.setTextColor(255, 249, 241);
+  doc.setFont('times', 'bold');
+  doc.setFontSize(15);
+  doc.text('ABDUL WALI KHAN UNIVERSITY MARDAN', pageWidth / 2, 9, { align: 'center' });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.text(`Monthly Attendance Report · Class: ${classId} · Month: ${monthName} ${year}`, pageWidth / 2, 17, { align: 'center' });
+
+  const tableBody = roster.map((st, index) => {
+    let presentCount = 0;
+    let absentCount = 0;
+    sessions.forEach(s => {
+      const rec = s.records[st.rollNumber];
+      if (rec?.status === 'present') presentCount++;
+      else if (rec) absentCount++;
+    });
+    const total = sessions.length;
+    const rate = total > 0 ? Math.round((presentCount / total) * 100) : 0;
+    return [index + 1, st.rollNumber, st.name, presentCount, absentCount, `${rate}%`];
+  });
+
+  autoTable(doc, {
+    startY: 32,
+    margin: { left: 14, right: 14, bottom: 20 },
+    head: [['S.No', 'Roll Number', 'Student Full Name', 'Total Present', 'Total Absent', 'Monthly Rate']],
+    body: tableBody,
+    theme: 'plain',
+    headStyles: { fillColor: [73, 50, 34], textColor: [255, 249, 241], fontSize: 8.5 },
+    bodyStyles: { fontSize: 8, textColor: [56, 39, 28] },
+    alternateRowStyles: { fillColor: [248, 240, 229] },
+    didDrawPage: (data) => {
+      const pageStr = `Page ${data.pageNumber} of ${doc.getNumberOfPages()}`;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(128, 106, 86);
+      doc.text('AWKUM ClassHub · Official Monthly Attendance Summary', 14, pageHeight - 8);
+      doc.text(pageStr, pageWidth - 14, pageHeight - 8, { align: 'right' });
+    },
+  });
+
+  const blob = doc.output('blob');
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}

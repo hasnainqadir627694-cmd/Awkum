@@ -395,9 +395,56 @@ Allows Master Admin to invalidate an active or pending invitation without touchi
 
 ---
 
-## 5. Diagnostics & Health Endpoint
+## 5. Account Lifecycle & Administrative Deletion Endpoints
 
-### 5.1 System Health
+### 5.1 Delete User Account Completely
+Permanently purges a user account from Firebase Authentication and in-memory caches. Reconciles active assignments.
+- **Route**: `POST /api/admin/delete-auth-user`
+- **Authorization**: Master Administrator only (`hasnainbuilds724656@gmail.com`).
+- **Body**:
+  ```json
+  {
+    "adminEmail": "hasnainbuilds724656@gmail.com",
+    "targetUid": "97DtWk8axhfWOyi3hZfOcWgS0n92",
+    "targetEmail": "user@awkum.edu.pk",
+    "reason": "Administrative deletion"
+  }
+  ```
+- **Response** — `200 OK`:
+  ```json
+  {
+    "success": true,
+    "authDeleted": true,
+    "targetUid": "97DtWk8axhfWOyi3hZfOcWgS0n92",
+    "targetEmail": "user@awkum.edu.pk",
+    "timestamp": "2026-10-26T12:00:00.000Z"
+  }
+  ```
+
+### 5.2 Reconcile Authentication State
+Reconciles server-side memory maps, cleans expired reservations, and synchronizes active invitations.
+- **Route**: `POST /api/admin/reconcile-auth`
+- **Authorization**: Master Administrator only.
+- **Body**:
+  ```json
+  {
+    "adminEmail": "hasnainbuilds724656@gmail.com"
+  }
+  ```
+- **Response** — `200 OK`:
+  ```json
+  {
+    "success": true,
+    "releasedReservations": 0,
+    "timestamp": "2026-10-26T12:00:00.000Z"
+  }
+  ```
+
+---
+
+## 6. Diagnostics & Health Endpoint
+
+### 6.1 System Health
 Returns overall system status, active CR assignment count, and integration health.
 
 - **Route**: `GET /api/health`
@@ -414,6 +461,6 @@ Returns overall system status, active CR assignment count, and integration healt
       "cloud_name": "ehc1fewm",
       "status": "connected"
     },
-    "timestamp": "2026-10-21T10:00:00.000Z"
+    "timestamp": "2026-10-26T10:00:00.000Z"
   }
   ```

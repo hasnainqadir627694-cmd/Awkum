@@ -22,6 +22,7 @@ import {
   DocumentSnapshot,
   FirestoreError,
 } from 'firebase/firestore';
+import { vacateSubjectsForTeacher } from './subjectService';
 
 export const MASTER_ADMIN_EMAIL = 'hasnainbuilds724656@gmail.com';
 
@@ -225,8 +226,11 @@ export async function getAllRegisteredUsersFromFirestore(): Promise<AdminUser[]>
       snap.forEach((docSnap) => {
         if (docSnap.exists()) {
           const data = docSnap.data();
+          if (data?.status === 'deleted' || data?.deleted === true || data?.accountStatus === 'deleted') {
+            return;
+          }
           const norm = normalizeUserRecord(docSnap.id, data);
-          if (norm.email && norm.email.includes('@')) {
+          if (norm.email && norm.email.includes('@') && norm.status !== ('deleted' as any)) {
             firestoreUsers.push(norm);
           }
         }
@@ -243,7 +247,7 @@ export async function getAllRegisteredUsersFromFirestore(): Promise<AdminUser[]>
       const serverData = await res.json();
       if (Array.isArray(serverData?.users)) {
         serverData.users.forEach((su: any) => {
-          if (su && su.email && su.email.includes('@')) {
+          if (su && su.email && su.email.includes('@') && su.status !== 'deleted' && !su.deleted) {
             firestoreUsers.push(normalizeUserRecord(su.id || su.uid, su));
           }
         });
@@ -299,8 +303,11 @@ export function subscribeToAllUsers(
         snapshot.forEach((docSnap) => {
           if (docSnap.exists()) {
             const data = docSnap.data();
+            if (data?.status === 'deleted' || data?.deleted === true || data?.accountStatus === 'deleted') {
+              return;
+            }
             const norm = normalizeUserRecord(docSnap.id, data);
-            if (norm.email && norm.email.includes('@')) {
+            if (norm.email && norm.email.includes('@') && norm.status !== ('deleted' as any)) {
               firestoreUsers.push(norm);
             }
           }
@@ -429,6 +436,7 @@ export async function resolveUserRole(
   verifiedUid?: string
 ): Promise<AuthResolutionResult> {
   const cleanId = identifier.trim().toLowerCase();
+  console.info('[Auth Service] resolveUserRole invoked for identifier:', cleanId, { verifiedUid });
 
   // 1. Initial Master Admin verification
   if (cleanId === MASTER_ADMIN_EMAIL.toLowerCase()) {
@@ -489,10 +497,53 @@ export async function resolveUserRole(
   }
 
   // 2. Validate current server-authorized CR & Teacher assignments
-  const [crVerdict, teacherVerdict] = await Promise.all([
+  const [crVerdict, baseTeacherVerdict] = await Promise.all([
     validateCRAssignmentOnServer(verifiedUid, cleanId),
     validateTeacherAssignmentOnServer(verifiedUid, cleanId),
   ]);
+
+  let teacherVerdict = baseTeacherVerdict;
+  if (!teacherVerdict.isTeacher && db) {
+    try {
+      const invSnap = await getDocs(collection(db, 'subjectInvitations'));
+      invSnap.forEach((d) => {
+        const inv = d.data();
+        const matchesEmail = cleanId && (
+          inv.teacherEmail?.toLowerCase() === cleanId ||
+          inv.claimedByEmail?.toLowerCase() === cleanId ||
+          inv.reservedForEmail?.toLowerCase() === cleanId
+        );
+        const matchesUid = verifiedUid && (
+          inv.teacherUid === verifiedUid ||
+          inv.claimedByUid === verifiedUid ||
+          inv.reservedForUid === verifiedUid
+        );
+        if ((matchesEmail || matchesUid) && (inv.status === 'claimed' || inv.status === 'reserved' || inv.status === 'active' || inv.status === 'registration_pending_verification')) {
+          teacherVerdict = {
+            isTeacher: true,
+            assignedSubjects: [inv.subjectName || inv.subjectId],
+            status: 'active',
+            teacherName: inv.teacherName || inv.claimedByName,
+          };
+        }
+      });
+
+      const staSnap = await getDocs(collection(db, 'subjectTeacherAssignments'));
+      staSnap.forEach((d) => {
+        const sta = d.data();
+        const matchesEmail = cleanId && sta.teacherEmail?.toLowerCase() === cleanId;
+        const matchesUid = verifiedUid && sta.teacherUid === verifiedUid;
+        if ((matchesEmail || matchesUid) && sta.status === 'active') {
+          teacherVerdict = {
+            isTeacher: true,
+            assignedSubjects: Array.from(new Set([...(teacherVerdict.assignedSubjects || []), sta.subjectName || sta.subjectId])),
+            status: 'active',
+            teacherName: sta.teacherName,
+          };
+        }
+      });
+    } catch (e) {}
+  }
 
   // 3. Find registered user in memory or Firestore
   let matchedUser = registeredUsersPool.find(
@@ -511,11 +562,14 @@ export async function resolveUserRole(
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
         ]);
         if (uidSnap && uidSnap.exists()) {
-          matchedUser = normalizeUserRecord(uidSnap.id, uidSnap.data());
+          const uData = uidSnap.data();
+          if (uData.status !== 'deleted' && !uData.deleted) {
+            matchedUser = normalizeUserRecord(uidSnap.id, uData);
+          }
         }
       }
 
-      // 3b. Check by email slug
+      // 3b. Check by email slug (strictly verify UID match to prevent reviving deleted accounts for new UIDs)
       if (!matchedUser && cleanId.includes('@')) {
         const userDocRef = doc(db, 'users', cleanId.replace(/[@.]/g, '_'));
         const snap = await Promise.race([
@@ -523,19 +577,32 @@ export async function resolveUserRole(
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
         ]);
         if (snap && snap.exists()) {
-          matchedUser = normalizeUserRecord(snap.id, snap.data());
+          const data = snap.data();
+          const docUid = data.uid || data.firebaseUid;
+          const isDeleted = data.status === 'deleted' || data.deleted === true;
+          // Only match if not deleted and (no verifiedUid provided, or docUid matches verifiedUid)
+          if (!isDeleted && (!verifiedUid || !docUid || docUid === verifiedUid)) {
+            matchedUser = normalizeUserRecord(snap.id, data);
+          }
         }
       }
 
-      // 3c. Query users collection by email
+      // 3c. Query users collection by email (strictly verify UID match)
       if (!matchedUser && cleanId.includes('@')) {
         const emailQuerySnap = await Promise.race([
           getDocs(query(collection(db, 'users'), where('email', '==', cleanId))),
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
         ]);
         if (emailQuerySnap && !emailQuerySnap.empty) {
-          const firstDoc = emailQuerySnap.docs[0];
-          matchedUser = normalizeUserRecord(firstDoc.id, firstDoc.data());
+          const validDoc = emailQuerySnap.docs.find((d) => {
+            const data = d.data();
+            const docUid = data.uid || data.firebaseUid;
+            const isDeleted = data.status === 'deleted' || data.deleted === true;
+            return !isDeleted && (!verifiedUid || !docUid || docUid === verifiedUid);
+          });
+          if (validDoc) {
+            matchedUser = normalizeUserRecord(validDoc.id, validDoc.data());
+          }
         }
       }
 
@@ -546,8 +613,10 @@ export async function resolveUserRole(
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
         ]);
         if (uidQuerySnap && !uidQuerySnap.empty) {
-          const firstDoc = uidQuerySnap.docs[0];
-          matchedUser = normalizeUserRecord(firstDoc.id, firstDoc.data());
+          const validDoc = uidQuerySnap.docs.find((d) => d.data().status !== 'deleted' && !d.data().deleted);
+          if (validDoc) {
+            matchedUser = normalizeUserRecord(validDoc.id, validDoc.data());
+          }
         }
       }
     } catch (err) {
@@ -561,9 +630,12 @@ export async function resolveUserRole(
       const serverRes = await fetch(`/api/admin/search-users?q=${encodeURIComponent(cleanId)}`);
       if (serverRes.ok) {
         const serverData = await serverRes.json();
-        const found = serverData?.users?.find(
-          (u: any) => u.email?.toLowerCase() === cleanId || (verifiedUid && u.uid === verifiedUid)
-        );
+        const found = serverData?.users?.find((u: any) => {
+          const isDeleted = u.status === 'deleted' || u.deleted === true;
+          const matchesEmail = u.email?.toLowerCase() === cleanId;
+          const matchesUid = verifiedUid && u.uid === verifiedUid;
+          return !isDeleted && (matchesUid || (!verifiedUid && matchesEmail));
+        });
         if (found) {
           matchedUser = normalizeUserRecord(found.id || found.uid, found);
         }
@@ -575,11 +647,12 @@ export async function resolveUserRole(
 
   // 3f. If user is authenticated in Firebase Auth (verifiedUid or auth.currentUser) but has no Firestore doc yet:
   // Auto-initialize their official user profile idempotently respecting teacher/admin status!
+  // NEW UID IMMUNITY: Re-registration of a deleted email creates a clean student account unless active assignment specifically binds this exact UID!
   if (!matchedUser && (verifiedUid || auth?.currentUser)) {
     const liveAuth = auth?.currentUser;
     const effectiveUid = verifiedUid || liveAuth?.uid || `uid_${cleanId.replace(/[@.]/g, '_')}`;
 
-    // Check if email or UID is registered in subjectInvitations or subjectTeacherAssignments
+    // Check if effectiveUid has an active invitation or assignment
     let isTeacherByInv = teacherVerdict.isTeacher;
     let invTeacherName = '';
     let invSubjects: string[] = [];
@@ -589,30 +662,28 @@ export async function resolveUserRole(
         const invSnap = await getDocs(query(collection(db, 'subjectInvitations')));
         invSnap.forEach((d) => {
           const inv = d.data();
-          const matchesEmail =
-            inv.teacherEmail?.toLowerCase() === cleanId ||
-            inv.reservedForEmail?.toLowerCase() === cleanId ||
-            inv.claimedByEmail?.toLowerCase() === cleanId;
-          const matchesUid =
-            inv.teacherUid === effectiveUid ||
-            inv.reservedForUid === effectiveUid ||
-            inv.claimedByUid === effectiveUid;
+          if (inv.status === 'active' || inv.status === 'reserved' || inv.status === 'claimed') {
+            const matchesUid =
+              inv.teacherUid === effectiveUid ||
+              inv.reservedForUid === effectiveUid ||
+              inv.claimedByUid === effectiveUid;
 
-          if (matchesEmail || matchesUid) {
-            isTeacherByInv = true;
-            if (inv.teacherName && !inv.teacherName.includes('@')) {
-              invTeacherName = inv.teacherName;
-            }
-            if (inv.subjectId) {
-              invSubjects.push(inv.subjectId);
+            if (matchesUid) {
+              isTeacherByInv = true;
+              if (inv.teacherName && !inv.teacherName.includes('@')) {
+                invTeacherName = inv.teacherName;
+              }
+              if (inv.subjectId) {
+                invSubjects.push(inv.subjectId);
+              }
             }
           }
         });
 
-        const staSnap = await getDocs(query(collection(db, 'subjectTeacherAssignments')));
+        const staSnap = await getDocs(query(collection(db, 'subjectTeacherAssignments'), where('status', '==', 'active')));
         staSnap.forEach((d) => {
           const sta = d.data();
-          if (sta.teacherEmail?.toLowerCase() === cleanId || sta.teacherUid === effectiveUid) {
+          if (sta.teacherUid === effectiveUid) {
             isTeacherByInv = true;
             if (sta.teacherName && !sta.teacherName.includes('@')) {
               invTeacherName = sta.teacherName;
@@ -1241,12 +1312,36 @@ export function subscribeToUserAggregateStats(
 }
 
 export function computeLocalStats(usersList: AdminUser[]): UserAggregateStats {
-  const safe = Array.from(new Map(usersList.map((u) => [u.email.toLowerCase(), u])).values());
+  const safe = Array.from(
+    new Map(
+      usersList
+        .filter((u) => u && (u.status as string) !== 'deleted' && (u as any).deleted !== true)
+        .map((u) => [u.email.toLowerCase(), u])
+    ).values()
+  );
   const verified = safe.filter((u) => u.emailVerified || u.email.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase()).length;
   const unverified = safe.filter((u) => !u.emailVerified && u.email.toLowerCase() !== MASTER_ADMIN_EMAIL.toLowerCase()).length;
-  const students = safe.filter((u) => u.role === 'student' || u.roles?.includes('student')).length;
-  const crs = safe.filter((u) => u.isCR || u.role === 'cr' || u.roles?.includes('cr')).length;
-  const teachers = safe.filter((u) => u.role === 'teacher' || u.roles?.includes('teacher')).length;
+  const teachers = safe.filter(
+    (u) =>
+      u.role === 'teacher' ||
+      u.roles?.includes('teacher') ||
+      u.teacherStatus === 'active' ||
+      u.teacherStatus === 'registration_pending_verification'
+  ).length;
+  const crs = safe.filter(
+    (u) =>
+      u.role !== 'teacher' &&
+      !u.roles?.includes('teacher') &&
+      (u.isCR || u.role === 'cr' || u.roles?.includes('cr'))
+  ).length;
+  const students = safe.filter(
+    (u) =>
+      u.role !== 'teacher' &&
+      !u.roles?.includes('teacher') &&
+      u.teacherStatus !== 'active' &&
+      u.teacherStatus !== 'registration_pending_verification' &&
+      (u.role === 'student' || u.roles?.includes('student'))
+  ).length;
 
   return {
     totalAccounts: safe.length,
@@ -1858,14 +1953,22 @@ export function subscribeToUserAccount(
 /**
  * Marks CR access dialog as acknowledged for a student
  */
-export async function markCRAccessAcknowledged(email: string): Promise<void> {
+export async function markCRAccessAcknowledged(email: string, uid?: string): Promise<void> {
   const cleanEmail = email.trim().toLowerCase();
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(`awkum_cr_acked_${cleanEmail}`, 'true');
+    } catch (e) {}
+  }
   registeredUsersPool = registeredUsersPool.map((u) =>
-    u.email.toLowerCase() === cleanEmail ? { ...u, crAcknowledged: true } : u
+    (u.email.toLowerCase() === cleanEmail || (uid && u.uid === uid)) ? { ...u, crAcknowledged: true } : u
   );
 
   if (db) {
     try {
+      if (uid) {
+        await setDoc(doc(db, 'users', uid), { crAcknowledged: true }, { merge: true });
+      }
       const userDocRef = doc(db, 'users', cleanEmail.replace(/[@.]/g, '_'));
       await setDoc(userDocRef, { crAcknowledged: true }, { merge: true });
     } catch (err) {
@@ -2053,5 +2156,366 @@ export async function revokeTeacherAccess(
   });
 
   return { success: true, user: revertedUser };
+}
+
+/**
+ * Permanently deletes a user account completely:
+ * 1. Calls backend server to delete from Firebase Authentication.
+ * 2. Revokes all active role assignments (CR assignments, Teacher assignments, role bindings).
+ * 3. Vacates all subjects assigned to this teacher while preserving 100% of curriculum documents, assignments, submissions, and attendance history.
+ * 4. Invalidates any pending or claimed invitations for this user.
+ * 5. Archives user profile to users_backup_archive and removes/marks deleted in users collection.
+ * 6. Completely excludes user from active registry, role tallies, and dashboard charts.
+ * 7. Recomputes and updates aggregates in aggregates/userStats.
+ * 8. Dispatches real-time broadcast events and records an immutable audit log.
+ */
+export async function deleteUserAccountCompletely(
+  adminEmail: string,
+  targetUser: AdminUser,
+  reason = 'Admin Complete Deletion'
+): Promise<{ success: boolean; error?: string }> {
+  const cleanAdmin = (adminEmail || '').trim().toLowerCase();
+  const cleanTargetEmail = (targetUser?.email || '').trim().toLowerCase();
+  const cleanTargetUid = (targetUser?.uid || '').trim();
+
+  if (cleanAdmin !== MASTER_ADMIN_EMAIL.toLowerCase()) {
+    return { success: false, error: 'Unauthorized: Only Master Administrator can delete user accounts.' };
+  }
+
+  if (!cleanTargetEmail && !cleanTargetUid) {
+    return { success: false, error: 'Invalid user account: Missing email and UID.' };
+  }
+
+  if (cleanTargetEmail === MASTER_ADMIN_EMAIL.toLowerCase()) {
+    return { success: false, error: 'Safety Violation: Master Administrator account cannot be deleted.' };
+  }
+
+  const nowIso = new Date().toISOString();
+
+  // 1. Call Backend Server to delete from Firebase Authentication and in-memory caches
+  try {
+    await fetch('/api/admin/delete-auth-user', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        adminEmail: cleanAdmin,
+        targetUid: cleanTargetUid,
+        targetEmail: cleanTargetEmail,
+        reason,
+      }),
+    });
+  } catch (serverErr) {
+    console.info('[Auth Service] Backend delete notice:', serverErr);
+  }
+
+  // 2. Revoke any active roles in crAssignments
+  if (db) {
+    try {
+      const crCol = collection(db, 'crAssignments');
+      const crSnap = await getDocs(crCol);
+      for (const d of crSnap.docs) {
+        const data = d.data();
+        if (data.status === 'active') {
+          const matches =
+            (cleanTargetUid && data.uid === cleanTargetUid) ||
+            (cleanTargetEmail && data.email?.toLowerCase() === cleanTargetEmail);
+          if (matches) {
+            await setDoc(
+              doc(db, 'crAssignments', d.id),
+              {
+                status: 'revoked',
+                revokedAt: nowIso,
+                revokedBy: cleanAdmin,
+                revocationReason: `Account Deleted Completely: ${reason}`,
+              },
+              { merge: true }
+            );
+          }
+        }
+      }
+    } catch (crErr) {
+      console.info('[Auth Service] CR revocation notice:', crErr);
+    }
+  }
+
+  // 3. Revoke any active teacher assignments in teacherAssignments
+  if (db) {
+    try {
+      const teacherCol = collection(db, 'teacherAssignments');
+      const teacherSnap = await getDocs(teacherCol);
+      for (const d of teacherSnap.docs) {
+        const data = d.data();
+        if (data.status === 'active') {
+          const matches =
+            (cleanTargetUid && data.uid === cleanTargetUid) ||
+            (cleanTargetEmail && data.email?.toLowerCase() === cleanTargetEmail);
+          if (matches) {
+            await setDoc(
+              doc(db, 'teacherAssignments', d.id),
+              {
+                status: 'revoked',
+                revokedAt: nowIso,
+                revokedBy: cleanAdmin,
+                revocationReason: `Account Deleted Completely: ${reason}`,
+              },
+              { merge: true }
+            );
+          }
+        }
+      }
+    } catch (teacherErr) {
+      console.info('[Auth Service] Teacher assignment revocation notice:', teacherErr);
+    }
+  }
+
+  // 4. Vacate all subjects assigned to this teacher (PRESERVING documents, assignments, submissions, attendance)
+  try {
+    await vacateSubjectsForTeacher({
+      teacherUid: cleanTargetUid,
+      teacherEmail: cleanTargetEmail,
+      adminEmail: cleanAdmin,
+      reason: `Account Deleted Completely: ${reason}`,
+    });
+  } catch (subjErr) {
+    console.info('[Auth Service] Vacate subjects notice:', subjErr);
+  }
+
+  // 5. Invalidate/revoke any invitations reserved or claimed by this user
+  if (db) {
+    try {
+      const invCol = collection(db, 'subjectInvitations');
+      const invSnap = await getDocs(invCol);
+      for (const d of invSnap.docs) {
+        const data = d.data();
+        const matches =
+          (cleanTargetUid && (data.teacherUid === cleanTargetUid || data.reservedForUid === cleanTargetUid)) ||
+          (cleanTargetEmail && (data.teacherEmail?.toLowerCase() === cleanTargetEmail || data.reservedForEmail?.toLowerCase() === cleanTargetEmail));
+
+        if (matches) {
+          if (data.status === 'reserved') {
+            await setDoc(
+              doc(db, 'subjectInvitations', d.id),
+              {
+                status: 'active',
+                reservedForEmail: null,
+                reservedForUid: null,
+                reservedAt: null,
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          } else if (data.status === 'claimed') {
+            await setDoc(
+              doc(db, 'subjectInvitations', d.id),
+              {
+                status: 'revoked',
+                revokedAt: nowIso,
+                revokedBy: cleanAdmin,
+                revocationReason: `Teacher account deleted: ${reason}`,
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          }
+        }
+      }
+    } catch (invErr) {
+      console.info('[Auth Service] Invitation cleanup notice:', invErr);
+    }
+  }
+
+  // 6. Archive user profile to users_backup_archive and delete from active users collection
+  if (db) {
+    try {
+      const docIdsToPurge: string[] = [];
+      if (cleanTargetUid) docIdsToPurge.push(cleanTargetUid);
+      if (cleanTargetEmail) docIdsToPurge.push(cleanTargetEmail.replace(/[@.]/g, '_'));
+      if (targetUser.id && targetUser.id.startsWith('u-')) {
+        const raw = targetUser.id.replace('u-', '');
+        if (!docIdsToPurge.includes(raw)) docIdsToPurge.push(raw);
+      }
+
+      for (const docId of docIdsToPurge) {
+        try {
+          const userDocRef = doc(db, 'users', docId);
+          const snap = await getDoc(userDocRef);
+          if (snap.exists()) {
+            const data = snap.data();
+            // A. Back up to users_backup_archive
+            await setDoc(doc(db, 'users_backup_archive', docId), {
+              ...data,
+              archivedAt: serverTimestamp(),
+              archivedBy: cleanAdmin,
+              archiveReason: `Account Deleted Completely: ${reason}`,
+              deletedAccountUid: cleanTargetUid,
+              deletedAccountEmail: cleanTargetEmail,
+            });
+            // B. Mark status deleted or delete from users collection
+            await deleteDoc(userDocRef).catch(async () => {
+              await setDoc(userDocRef, {
+                status: 'deleted',
+                deleted: true,
+                deletedAt: serverTimestamp(),
+                deletedBy: cleanAdmin,
+              }, { merge: true });
+            });
+          }
+        } catch (docErr) {
+          console.info(`[Auth Service] Notice purging doc ${docId}:`, docErr);
+        }
+      }
+    } catch (archiveErr) {
+      console.info('[Auth Service] Archive/purge notice:', archiveErr);
+    }
+  }
+
+  // 7. Remove from local memory pool and notify subscribers
+  registeredUsersPool = registeredUsersPool.filter(
+    (u) =>
+      u.email.toLowerCase() !== cleanTargetEmail &&
+      (!cleanTargetUid || u.uid !== cleanTargetUid) &&
+      u.id !== targetUser.id
+  );
+  notifyUserSubscribers(registeredUsersPool);
+
+  // 8. Recompute local aggregates and persist to Firestore aggregates/userStats
+  const updatedStats = computeLocalStats(registeredUsersPool);
+  if (db) {
+    try {
+      await setDoc(
+        doc(db, 'aggregates', 'userStats'),
+        {
+          ...updatedStats,
+          lastReconciledAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    } catch (statsErr) {
+      console.info('[Auth Service] Stats update notice:', statsErr);
+    }
+  }
+
+  // 9. Dispatch custom events for reactive UI updates
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('classhub_user_deleted', { detail: { targetUid: cleanTargetUid, targetEmail: cleanTargetEmail } }));
+    window.dispatchEvent(new CustomEvent('classhub_user_registered', { detail: registeredUsersPool }));
+  }
+
+  // 10. Record immutable audit log
+  await recordAuditLog({
+    action: 'User Account Completely Deleted',
+    performedBy: cleanAdmin,
+    details: `Permanently deleted account ${targetUser.name} (${cleanTargetEmail}, UID: ${cleanTargetUid || 'N/A'}, Role: ${targetUser.role.toUpperCase()}). All associated roles revoked, occupied subjects vacated, and active directory updated.`,
+    category: 'security',
+    status: 'warning',
+  });
+
+  return { success: true };
+}
+
+/**
+ * Automated reconciliation to synchronize Firestore, roles, and subject assignments:
+ * - Detects orphaned or deleted accounts in Firestore.
+ * - Vacates subjects assigned to deleted/missing teachers (preserving documents/submissions).
+ * - Archives orphaned records and recomputes true dashboard metrics in real time.
+ */
+export async function reconcileAllAccountsWithAuth(
+  adminEmail: string
+): Promise<{ success: boolean; reconciledCount: number; vacatedSubjectsCount: number; message: string }> {
+  const cleanAdmin = (adminEmail || '').trim().toLowerCase();
+  if (cleanAdmin !== MASTER_ADMIN_EMAIL.toLowerCase()) {
+    return { success: false, reconciledCount: 0, vacatedSubjectsCount: 0, message: 'Unauthorized: Master Admin only.' };
+  }
+
+  // 1. Call server reconcile endpoint
+  try {
+    await fetch('/api/admin/reconcile-auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminEmail: cleanAdmin }),
+    });
+  } catch (e) {}
+
+  let reconciledCount = 0;
+  let vacatedSubjectsCount = 0;
+
+  if (db) {
+    try {
+      // 2. Fetch all user docs in Firestore
+      const usersSnap = await getDocs(collection(db, 'users'));
+      const activeUids = new Set<string>();
+      const activeEmails = new Set<string>();
+
+      for (const d of usersSnap.docs) {
+        const data = d.data();
+        if (data.status === 'deleted' || data.deleted === true) {
+          reconciledCount++;
+          continue;
+        }
+        const email = (data.email || (d.id.includes('@') ? d.id : '')).trim().toLowerCase();
+        const uid = (data.uid || (!d.id.includes('@') && !d.id.includes('_') ? d.id : '')).trim();
+        if (email) activeEmails.add(email);
+        if (uid) activeUids.add(uid);
+      }
+
+      // 3. Check all subjects: if assigned to an orphaned or missing teacher, vacate!
+      const subjectsSnap = await getDocs(collection(db, 'subjects'));
+      for (const sDoc of subjectsSnap.docs) {
+        const sData = sDoc.data();
+        if (sData.status === 'Assigned' || sData.assignedTeacher) {
+          const tUid = (sData.teacherUid || '').trim();
+          const tEmail = (sData.teacherEmail || '').trim().toLowerCase();
+
+          // Check if teacher still exists in active users
+          const uidExists = tUid ? activeUids.has(tUid) : false;
+          const emailExists = tEmail ? activeEmails.has(tEmail) : false;
+
+          if (!uidExists && !emailExists) {
+            // Orphaned teacher on subject! Vacate it!
+            await setDoc(doc(db, 'subjects', sDoc.id), {
+              assignedTeacher: null,
+              teacherEmail: null,
+              teacherUid: null,
+              assignmentId: null,
+              status: 'Unassigned',
+              teacherAssignedAt: null,
+              updatedAt: serverTimestamp(),
+            }, { merge: true });
+            vacatedSubjectsCount++;
+          }
+        }
+      }
+
+      // 4. Reload fresh users and compute accurate aggregate stats
+      const freshUsers = await getAllRegisteredUsersFromFirestore();
+      const updatedStats = computeLocalStats(freshUsers);
+      await setDoc(
+        doc(db, 'aggregates', 'userStats'),
+        {
+          ...updatedStats,
+          lastReconciledAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      await recordAuditLog({
+        action: 'Account Registry Reconciled',
+        performedBy: cleanAdmin,
+        details: `Reconciled user accounts with database records. Checked ${usersSnap.size} profile docs, verified active identities, and vacated ${vacatedSubjectsCount} orphaned subject assignments.`,
+        category: 'security',
+        status: 'success',
+      });
+    } catch (err: any) {
+      console.error('[Auth Service] Reconcile error:', err);
+      return { success: false, reconciledCount: 0, vacatedSubjectsCount: 0, message: err?.message || 'Reconciliation failed.' };
+    }
+  }
+
+  return {
+    success: true,
+    reconciledCount,
+    vacatedSubjectsCount,
+    message: `Account registry successfully reconciled. ${vacatedSubjectsCount} orphaned subjects vacated, aggregates updated.`,
+  };
 }
 

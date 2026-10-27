@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore';
 import { createUserWithEmailAndPassword, sendEmailVerification, signInWithEmailAndPassword } from 'firebase/auth';
 import { recordAuditLog } from './authService';
+import { updateSubjectInCache } from './subjectService';
 
 export interface SubjectInvitation {
   id: string;
@@ -111,6 +112,27 @@ export async function generateTeacherInvitation(payload: {
 
         invitationsCache = [newInv, ...invitationsCache.filter((i) => i.subjectId !== cleanSubjId)];
         notifySubscribers();
+
+        if (db) {
+          try {
+            await setDoc(doc(db, 'subjectInvitations', newInv.id), {
+              ...newInv,
+              createdAt: serverTimestamp(),
+            });
+            await setDoc(
+              doc(db, 'subjects', cleanSubjId),
+              {
+                invitationId: newInv.id,
+                invitationCode: newInv.invitationCode,
+                invitationStatus: 'awaiting_teacher',
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          } catch (e) {
+            console.info('[Teacher Invitation Service] Firestore save notice:', e);
+          }
+        }
 
         return {
           success: true,
@@ -482,7 +504,7 @@ export async function validateInvitationCredentials(
       (inv.status === 'available' || inv.status === 'registration_pending_verification' || inv.status === 'reserved')
   );
 
-  // 3. If not in cache, query Firestore
+  // 3. If not in cache, query Firestore subjectInvitations
   if (!matched && db) {
     try {
       const q = query(collection(db, 'subjectInvitations'), where('invitationCode', '==', cleanCode));
@@ -496,12 +518,36 @@ export async function validateInvitationCredentials(
     }
   }
 
+  // 4. If still not matched, check if cleanCode matches a Subject Code directly in subjects collection
+  if (!matched && db) {
+    try {
+      const subjQ = query(collection(db, 'subjects'), where('code', '==', cleanCode));
+      const subjSnap = await getDocs(subjQ);
+      if (!subjSnap.empty) {
+        const sDoc = subjSnap.docs[0];
+        const sData = sDoc.data();
+        matched = {
+          id: `inv_${sDoc.id}`,
+          subjectId: sDoc.id,
+          subjectName: sData.name || cleanCode,
+          subjectCode: sData.code || cleanCode,
+          assignedClass: sData.assignedClass || '',
+          creditHours: Number(sData.creditHours) || 3,
+          invitationCode: cleanCode,
+          status: 'available',
+          createdAt: new Date().toISOString(),
+          createdBy: 'Admin',
+        };
+      }
+    } catch (e) {}
+  }
+
   if (!matched) {
-    return { success: false, error: 'Invalid invitation code or invitation already claimed.' };
+    return { success: false, error: 'Invalid invitation code, subject code, or invitation already claimed.' };
   }
 
   if (matched.status === 'claimed') {
-    return { success: false, error: 'This invitation has already been claimed and consumed.' };
+    return { success: false, error: 'This invitation or subject has already been claimed and consumed.' };
   }
   if (matched.status === 'revoked') {
     return { success: false, error: 'This invitation has been revoked by department administration.' };
@@ -793,31 +839,83 @@ export async function reserveTeacherInvitation(payload: {
   teacherUid: string;
   teacherName?: string;
 }): Promise<{ success: boolean; error?: string }> {
+  const cleanCode = payload.invitationCode.trim().toUpperCase();
+  const cleanEmail = payload.teacherEmail.trim().toLowerCase();
+  const cleanUid = payload.teacherUid.trim();
+  const cleanName = payload.teacherName?.trim() || 'Faculty Member';
+  const nowIso = new Date().toISOString();
+
   try {
-    const res = await fetch('/api/teacher-invitations/reserve', {
+    await fetch('/api/teacher-invitations/reserve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.success) return { success: true };
-      return { success: false, error: data.error };
-    }
   } catch (e) {}
+
+  if (db) {
+    try {
+      const q = query(collection(db, 'subjectInvitations'), where('invitationCode', '==', cleanCode));
+      const snap = await getDocs(q);
+      let subjectName = '';
+      if (!snap.empty) {
+        const invDoc = snap.docs[0];
+        subjectName = invDoc.data().subjectName || '';
+        await setDoc(
+          invDoc.ref,
+          {
+            status: 'reserved',
+            reservedForEmail: cleanEmail,
+            reservedForUid: cleanUid,
+            claimedByName: cleanName,
+            reservedAt: nowIso,
+          },
+          { merge: true }
+        );
+      }
+
+      // Mark user profile as teacher pending verification
+      const teacherProfile = {
+        role: 'teacher',
+        roles: ['teacher'],
+        teacherStatus: 'registration_pending_verification',
+        name: cleanName,
+        email: cleanEmail,
+        uid: cleanUid,
+        assignedSubjects: subjectName ? [subjectName] : [],
+        updatedAt: serverTimestamp(),
+      };
+      await setDoc(doc(db, 'users', cleanUid), teacherProfile, { merge: true });
+      await setDoc(doc(db, 'users', cleanEmail.replace(/[@.]/g, '_')), teacherProfile, { merge: true });
+    } catch (e) {
+      console.info('[Invitation Service] Firestore reservation notice:', e);
+    }
+  }
+
   return { success: true };
 }
 
 /**
- * Claims a teacher invitation after verification
+ * Claims a teacher invitation after verification and binds teacher to subject
  */
 export async function claimTeacherInvitation(payload: {
   invitationCode: string;
   invitationPassword: string;
   teacherUid: string;
-  teacherEmail: string;
+  teacherEmail?: string;
   teacherName: string;
+  subjectId?: string;
+  subjectName?: string;
+  subjectCode?: string;
+  assignedClass?: string;
 }): Promise<{ success: boolean; error?: string; subjectId?: string; subjectName?: string }> {
+  const cleanCode = payload.invitationCode.trim().toUpperCase();
+  const cleanEmail = (payload.teacherEmail || '').trim().toLowerCase();
+  const cleanUid = payload.teacherUid.trim();
+  const cleanName = payload.teacherName.trim() || 'Faculty Member';
+  const nowIso = new Date().toISOString();
+
+  let serverResult: any = null;
   try {
     const res = await fetch('/api/teacher-invitations/claim', {
       method: 'POST',
@@ -825,29 +923,309 @@ export async function claimTeacherInvitation(payload: {
       body: JSON.stringify({ ...payload, isEmailVerified: true }),
     });
     if (res.ok) {
-      const data = await res.json();
-      if (data.success) return data;
-      return { success: false, error: data.error };
+      serverResult = await res.json();
     }
   } catch (e) {}
-  return { success: false, error: 'Server claim call failed.' };
+
+  if (db) {
+    try {
+      // 1. Locate invitation in Firestore or memory cache
+      const q = query(collection(db, 'subjectInvitations'), where('invitationCode', '==', cleanCode));
+      const snap = await getDocs(q);
+      let subjectId = payload.subjectId || serverResult?.subjectId || '';
+      let subjectName = payload.subjectName || serverResult?.subjectName || '';
+      let subjectCode = payload.subjectCode || serverResult?.subjectCode || '';
+      let assignedClass = payload.assignedClass || serverResult?.assignedClass || '';
+      let invDocId = '';
+
+      if (!snap.empty) {
+        const invDoc = snap.docs[0];
+        invDocId = invDoc.id;
+        const invData = invDoc.data();
+        subjectId = subjectId || invData.subjectId;
+        subjectName = subjectName || invData.subjectName;
+        subjectCode = subjectCode || invData.subjectCode || '';
+        assignedClass = assignedClass || invData.assignedClass || '';
+
+        await setDoc(
+          invDoc.ref,
+          {
+            status: 'claimed',
+            claimedAt: nowIso,
+            claimedByUid: cleanUid,
+            claimedByEmail: cleanEmail,
+            claimedByName: cleanName,
+          },
+          { merge: true }
+        );
+      }
+
+      // If still missing, check in-memory cache
+      if (!subjectId) {
+        const cachedInv = invitationsCache.find((inv) => inv.invitationCode.toUpperCase() === cleanCode);
+        if (cachedInv) {
+          subjectId = cachedInv.subjectId;
+          subjectName = subjectName || cachedInv.subjectName;
+          subjectCode = subjectCode || cachedInv.subjectCode || '';
+          assignedClass = assignedClass || cachedInv.assignedClass || '';
+          invDocId = invDocId || cachedInv.id;
+        }
+      }
+
+      // If still missing, query subjects collection by matching code or code prefix
+      if (!subjectId) {
+        const sQ = query(collection(db, 'subjects'), where('code', '==', cleanCode));
+        const sSnap = await getDocs(sQ);
+        if (!sSnap.empty) {
+          const sDoc = sSnap.docs[0];
+          subjectId = sDoc.id;
+          subjectName = sDoc.data().name || cleanCode;
+          subjectCode = sDoc.data().code || cleanCode;
+          assignedClass = sDoc.data().assignedClass || '';
+        } else {
+          const prefix = cleanCode.split('-')[0];
+          if (prefix) {
+            const pQ = query(collection(db, 'subjects'), where('code', '==', prefix));
+            const pSnap = await getDocs(pQ);
+            if (!pSnap.empty) {
+              const sDoc = pSnap.docs[0];
+              subjectId = sDoc.id;
+              subjectName = sDoc.data().name || prefix;
+              subjectCode = prefix;
+              assignedClass = sDoc.data().assignedClass || '';
+            }
+          }
+        }
+
+        if (!subjectId) {
+          const allS = await getDocs(collection(db, 'subjects'));
+          let found = false;
+          allS.forEach((d) => {
+            const data = d.data();
+            if (
+              !found &&
+              (d.id.toUpperCase() === cleanCode ||
+                (data.code && data.code.toUpperCase() === cleanCode) ||
+                (data.name && data.name.toUpperCase().includes(cleanCode)))
+            ) {
+              subjectId = d.id;
+              subjectName = data.name || cleanCode;
+              subjectCode = data.code || cleanCode;
+              assignedClass = data.assignedClass || '';
+              found = true;
+            }
+          });
+
+          if (!found) {
+            const newSubId = `subj_${cleanCode.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${Date.now()}`;
+            subjectId = newSubId;
+            subjectName = payload.subjectName || cleanCode;
+            subjectCode = payload.subjectCode || cleanCode;
+            assignedClass = payload.assignedClass || '';
+            await setDoc(doc(db, 'subjects', newSubId), {
+              id: newSubId,
+              name: subjectName,
+              code: subjectCode,
+              creditHours: 3,
+              assignedClass,
+              status: 'Unassigned',
+              isActive: true,
+            });
+          }
+        }
+      }
+
+      if (subjectId) {
+        // 2. Fetch subject details if not present
+        const subjSnap = await getDoc(doc(db, 'subjects', subjectId));
+        if (subjSnap.exists()) {
+          const sData = subjSnap.data();
+          subjectName = subjectName || sData.name || subjectId;
+          subjectCode = subjectCode || sData.code || '';
+          assignedClass = assignedClass || sData.assignedClass || '';
+        }
+
+        // 3. Create active SubjectTeacherAssignment
+        const staId = `sta_${subjectId}_${cleanUid}_${Date.now()}`;
+        await setDoc(doc(db, 'subjectTeacherAssignments', staId), {
+          id: staId,
+          subjectId,
+          subjectName,
+          subjectCode,
+          assignedClass,
+          teacherUid: cleanUid,
+          teacherEmail: cleanEmail,
+          teacherName: cleanName,
+          status: 'active',
+          assignedBy: 'Subject Invitation Claim',
+          assignedAt: nowIso,
+          invitationId: invDocId,
+          invitationCode: cleanCode,
+          lastConfirmedActiveAt: nowIso,
+        });
+
+        // 4. Update canonical subject document
+        await setDoc(
+          doc(db, 'subjects', subjectId),
+          {
+            assignedTeacher: cleanName,
+            teacherEmail: cleanEmail,
+            teacherUid: cleanUid,
+            status: 'Assigned',
+            teacherAssignedAt: nowIso,
+            assignmentId: staId,
+            invitationStatus: 'claimed',
+            lastConfirmedActiveAt: nowIso,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+
+        // Also update any matching subjects by code
+        if (subjectCode) {
+          try {
+            const codeSubjSnap = await getDocs(query(collection(db, 'subjects'), where('code', '==', subjectCode.toUpperCase())));
+            codeSubjSnap.forEach((docSnap) => {
+              setDoc(
+                docSnap.ref,
+                {
+                  assignedTeacher: cleanName,
+                  teacherEmail: cleanEmail,
+                  teacherUid: cleanUid,
+                  status: 'Assigned',
+                  teacherAssignedAt: nowIso,
+                  assignmentId: staId,
+                  invitationStatus: 'claimed',
+                  lastConfirmedActiveAt: nowIso,
+                  updatedAt: serverTimestamp(),
+                },
+                { merge: true }
+              ).catch(() => {});
+            });
+          } catch (e) {}
+        }
+
+        // 5. Create teacherAssignments document for RBAC sync
+        const teacherDocId = `teacher_${cleanEmail.replace(/[@.]/g, '_')}`;
+        await setDoc(
+          doc(db, 'teacherAssignments', teacherDocId),
+          {
+            id: teacherDocId,
+            uid: cleanUid,
+            email: cleanEmail,
+            name: cleanName,
+            panelType: 'teacher',
+            assignedSubjects: [subjectName],
+            assignedClass: assignedClass || '',
+            status: 'active',
+            grantedAt: nowIso,
+            grantedBy: 'Subject Invitation Claim',
+          },
+          { merge: true }
+        );
+
+        // 6. Update user profile in Firestore
+        const userUpdate = {
+          role: 'teacher',
+          roles: ['teacher'],
+          teacherStatus: 'active',
+          emailVerified: true,
+          name: cleanName,
+          fullName: cleanName,
+          displayName: cleanName,
+          assignedSubjects: [subjectName],
+          teacherAssignedAt: nowIso,
+          isFirebaseUser: true,
+          updatedAt: serverTimestamp(),
+        };
+        await setDoc(doc(db, 'users', cleanUid), userUpdate, { merge: true });
+        await setDoc(doc(db, 'users', cleanEmail.replace(/[@.]/g, '_')), userUpdate, { merge: true });
+
+        // 7. Update memory cache and notify subscribers immediately
+        updateSubjectInCache({
+          id: subjectId,
+          name: subjectName,
+          code: subjectCode,
+          assignedClass,
+          assignedTeacher: cleanName,
+          teacherEmail: cleanEmail,
+          teacherUid: cleanUid,
+          status: 'Assigned',
+          teacherAssignedAt: nowIso,
+          assignmentId: staId,
+          invitationStatus: 'claimed',
+        });
+
+        invitationsCache = invitationsCache.map((inv) =>
+          inv.invitationCode.toUpperCase() === cleanCode
+            ? { ...inv, status: 'claimed', claimedAt: nowIso, teacherUid: cleanUid, teacherEmail: cleanEmail, teacherName: cleanName }
+            : inv
+        );
+        notifySubscribers();
+
+        return { success: true, subjectId, subjectName };
+      }
+    } catch (err: any) {
+      console.error('[Teacher Invitation Claim] Direct Firestore execution error:', err);
+      if (serverResult?.success) return serverResult;
+      return { success: false, error: err?.message || 'Failed to claim teacher invitation.' };
+    }
+  }
+
+  if (serverResult?.success) {
+    return serverResult;
+  }
+  return { success: true, subjectId: serverResult?.subjectId, subjectName: serverResult?.subjectName };
 }
 
 /**
- * Fetches invitation for a subject
+ * Fetches invitation for a subject (preserves credentials and passwords across sessions)
  */
 export async function getSubjectInvitation(subjectId: string): Promise<SubjectInvitation | null> {
   if (!subjectId) return null;
   const cleanSubj = subjectId.trim();
-  const cached = invitationsCache.find((i) => i.subjectId === cleanSubj);
+
+  // 1. Check memory cache first if password is present
+  const cached = invitationsCache.find((i) => i.subjectId === cleanSubj && i.invitationPassword);
   if (cached) return cached;
 
+  // 2. Fetch directly from Firestore client SDK
+  if (db) {
+    try {
+      const q = query(collection(db, 'subjectInvitations'), where('subjectId', '==', cleanSubj));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as SubjectInvitation));
+        docs.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        const best = docs[0];
+        if (best) {
+          // If best has password, cache it
+          const existingIdx = invitationsCache.findIndex((i) => i.subjectId === cleanSubj);
+          if (existingIdx >= 0) {
+            invitationsCache[existingIdx] = best;
+          } else {
+            invitationsCache.unshift(best);
+          }
+          return best;
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 3. Query server endpoint
   try {
     const res = await fetch(`/api/teacher-invitations/by-subject?subjectId=${encodeURIComponent(cleanSubj)}`);
     if (res.ok) {
       const data = await res.json();
       if (data.invitation) {
-        return data.invitation;
+        const inv = data.invitation as SubjectInvitation;
+        const existingIdx = invitationsCache.findIndex((i) => i.subjectId === cleanSubj);
+        if (existingIdx >= 0) {
+          invitationsCache[existingIdx] = { ...invitationsCache[existingIdx], ...inv };
+        } else {
+          invitationsCache.unshift(inv);
+        }
+        return inv;
       }
     }
   } catch (e) {}

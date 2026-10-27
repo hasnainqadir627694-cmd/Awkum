@@ -85,12 +85,8 @@ export const CRAttendanceMarkingView: React.FC<CRAttendanceMarkingViewProps> = (
         });
         setAttendanceMap(map);
       } else {
-        // Default: Initialize all enrolled students as Present for swift workflow
-        const defaultMap: Record<string, 'present' | 'absent'> = {};
-        roster.forEach((st) => {
-          defaultMap[st.rollNumber] = 'present';
-        });
-        setAttendanceMap(defaultMap);
+        // Unselected initial state as requested
+        setAttendanceMap({});
       }
     });
 
@@ -102,7 +98,9 @@ export const CRAttendanceMarkingView: React.FC<CRAttendanceMarkingViewProps> = (
   // Derived counts
   const totalEnrolled = roster.length;
   const presentCount = roster.filter((st) => attendanceMap[st.rollNumber] === 'present').length;
-  const absentCount = totalEnrolled - presentCount;
+  const explicitAbsentCount = roster.filter((st) => attendanceMap[st.rollNumber] === 'absent').length;
+  const unmarkedCount = totalEnrolled - presentCount - explicitAbsentCount;
+  const absentCount = explicitAbsentCount + unmarkedCount; // Upon save confirmation, unmarked become absent
   const attendanceRate = totalEnrolled > 0 ? Math.round((presentCount / totalEnrolled) * 100) : 0;
 
   // Filtered roster for search
@@ -150,12 +148,13 @@ export const CRAttendanceMarkingView: React.FC<CRAttendanceMarkingViewProps> = (
 
       const records: Record<string, StudentAttendanceRecord> = {};
       roster.forEach((st) => {
+        const status = attendanceMap[st.rollNumber] === 'present' ? 'present' : 'absent';
         records[st.rollNumber] = {
           studentId: st.id,
           studentName: st.name,
           rollNumber: st.rollNumber,
-          status: attendanceMap[st.rollNumber] || 'absent',
-          notes: attendanceMap[st.rollNumber] === 'present' ? 'Attended' : 'Unexcused',
+          status,
+          notes: status === 'present' ? 'Attended' : 'Unexcused / Unmarked',
         };
       });
 
@@ -452,22 +451,35 @@ export const CRAttendanceMarkingView: React.FC<CRAttendanceMarkingViewProps> = (
 
             <div className="p-3.5 bg-white border border-[#E6D8C7] rounded-2xl space-y-2 text-xs">
               <div className="flex justify-between">
-                <span className="text-[#806A56]">Total Enrolled:</span>
-                <span className="font-bold text-[#38271C]">{totalEnrolled} Students</span>
+                <span className="text-[#806A56]">Total Students:</span>
+                <span className="font-bold text-[#38271C]">{totalEnrolled}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[#668064] font-semibold">Present Students:</span>
+                <span className="text-[#668064] font-semibold">Present:</span>
                 <span className="font-bold text-[#668064]">{presentCount}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[#C84B31] font-semibold">Absent Students:</span>
+                <span className="text-[#C84B31] font-semibold">Explicitly Absent:</span>
+                <span className="font-bold text-[#C84B31]">{explicitAbsentCount}</span>
+              </div>
+              {unmarkedCount > 0 && (
+                <div className="flex justify-between text-amber-800">
+                  <span>Unmarked (Will be Absent):</span>
+                  <span className="font-bold">{unmarkedCount}</span>
+                </div>
+              )}
+              <div className="flex justify-between pt-1 border-t border-[#E6D8C7]">
+                <span className="font-bold text-[#493222]">Final Absent Count:</span>
                 <span className="font-bold text-[#C84B31]">{absentCount}</span>
               </div>
-              <div className="flex justify-between pt-1 border-t border-[#E6D8C7]">
-                <span className="font-bold text-[#493222]">Attendance Percentage:</span>
-                <span className="font-bold text-[#493222]">{attendanceRate}%</span>
-              </div>
             </div>
+
+            {unmarkedCount > 0 && (
+              <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-xs flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{unmarkedCount} students have not been marked. If you continue, these students will be recorded as Absent.</span>
+              </div>
+            )}
 
             {saveError && (
               <div className="p-3 bg-[#FDE8E4] border border-[#F5C2B8] text-[#C84B31] rounded-xl text-xs flex items-start gap-2">

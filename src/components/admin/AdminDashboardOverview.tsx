@@ -16,7 +16,7 @@ import {
 import { AdminUser, AuditLogItem, SubjectConfig, ClassSection, UserAggregateStats } from '../../data/adminData';
 import { subscribeToCurriculumSubjects, getAllSubjectsFromFirestore } from '../../lib/subjectService';
 import { subscribeToClasses } from '../../lib/classService';
-import { subscribeToUserAggregateStats } from '../../lib/authService';
+import { subscribeToUserAggregateStats, reconcileAllAccountsWithAuth, MASTER_ADMIN_EMAIL } from '../../lib/authService';
 import { executeUserMigration, MigrationAuditResult } from '../../lib/userMigrationService';
 import { ShieldCheck, RefreshCw, Archive, Check, Sparkles, X } from 'lucide-react';
 
@@ -78,21 +78,35 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
     };
   }, []);
 
-  // Ensure safe, validated user records
+  // Ensure safe, validated user records excluding deleted accounts
   const safeUsers = Array.isArray(users)
-    ? users.filter((u): u is AdminUser => Boolean(u && typeof u === 'object' && u.id && u.role))
+    ? users.filter((u): u is AdminUser => Boolean(u && typeof u === 'object' && u.id && u.role && (u.status as string) !== 'deleted'))
     : [];
 
-  // 100% REAL dynamic metrics - absolutely zero fake offsets
+  // 100% REAL dynamic metrics - zero fake offsets
   const totalUsers = safeUsers.length;
-  const studentCount = safeUsers.filter(
-    (u) => (u.role === 'student' || (Array.isArray(u.roles) && u.roles.includes('student'))) && u.status !== 'suspended'
-  ).length;
   const teacherCount = safeUsers.filter(
-    (u) => (u.role === 'teacher' || (Array.isArray(u.roles) && u.roles.includes('teacher'))) && u.teacherStatus !== 'revoked' && u.status !== 'suspended'
+    (u) =>
+      (u.role === 'teacher' || (Array.isArray(u.roles) && u.roles.includes('teacher')) || u.teacherStatus === 'active') &&
+      u.teacherStatus !== 'revoked' &&
+      u.status !== 'suspended'
   ).length;
   const crCount = safeUsers.filter(
-    (u) => (u.isCR || u.role === 'cr' || (Array.isArray(u.roles) && u.roles.includes('cr'))) && u.crStatus !== 'revoked' && u.status !== 'suspended'
+    (u) =>
+      u.role !== 'teacher' &&
+      !u.roles?.includes('teacher') &&
+      u.teacherStatus !== 'active' &&
+      (u.isCR || u.role === 'cr' || (Array.isArray(u.roles) && u.roles.includes('cr'))) &&
+      u.crStatus !== 'revoked' &&
+      u.status !== 'suspended'
+  ).length;
+  const studentCount = safeUsers.filter(
+    (u) =>
+      u.role !== 'teacher' &&
+      !u.roles?.includes('teacher') &&
+      u.teacherStatus !== 'active' &&
+      (u.role === 'student' || (Array.isArray(u.roles) && u.roles.includes('student'))) &&
+      u.status !== 'suspended'
   ).length;
   const pendingCount = safeUsers.filter((u) => u.status === 'pending').length;
   const firebaseUserCount = safeUsers.filter(
@@ -108,10 +122,13 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
     setReconcileSuccess(null);
     try {
       const res = await executeUserMigration(dryRun);
+      if (!dryRun) {
+        await reconcileAllAccountsWithAuth(MASTER_ADMIN_EMAIL);
+      }
       setAuditResult(res);
       setShowAuditModal(true);
       if (!dryRun) {
-        setReconcileSuccess(`Successfully reconciled user registry! Safely archived ${res.backedUpCount} orphaned documents into users_backup_archive.`);
+        setReconcileSuccess(`Successfully reconciled user registry! Safely archived ${res.backedUpCount} orphaned documents into users_backup_archive and synchronized active assignments.`);
       }
     } catch (err: any) {
       console.error('[Admin Dashboard] Audit notice:', err);

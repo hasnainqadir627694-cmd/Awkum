@@ -23,7 +23,7 @@ interface CRDashboardViewProps {
   totalEnrolled: number;
   recentSessions: AttendanceSession[];
   nextClass: ScheduleItem | undefined;
-  onNavigateTab: (tab: 'dashboard' | 'attendance' | 'schedule' | 'students' | 'history' | 'notify') => void;
+  onNavigateTab: (tab: 'dashboard' | 'attendance' | 'schedule' | 'students' | 'history' | 'weekly' | 'monthly' | 'notify') => void;
   onNotifyTeacherClick: (classItem: ScheduleItem) => void;
 }
 
@@ -202,13 +202,37 @@ export const CRDashboardView: React.FC<CRDashboardViewProps> = ({
           {/* Action 5: Attendance History */}
           <button
             onClick={() => onNavigateTab('history')}
-            className="p-3.5 bg-[#FFF9F1] hover:bg-white border border-[#E6D8C7] rounded-2xl shadow-2xs text-left transition-all group cursor-pointer active:scale-98 col-span-2 sm:col-span-1"
+            className="p-3.5 bg-[#FFF9F1] hover:bg-white border border-[#E6D8C7] rounded-2xl shadow-2xs text-left transition-all group cursor-pointer active:scale-98"
           >
             <div className="w-9 h-9 rounded-xl bg-[#F8F0E5] text-[#806A56] flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
               <History className="w-4 h-4" />
             </div>
             <span className="font-bold text-xs text-[#38271C] block truncate">History</span>
             <span className="text-[10px] text-[#806A56] mt-0.5 block truncate">Past dates & PDFs</span>
+          </button>
+
+          {/* Action 6: Weekly Report */}
+          <button
+            onClick={() => onNavigateTab('weekly')}
+            className="p-3.5 bg-[#FFF9F1] hover:bg-white border border-[#E6D8C7] rounded-2xl shadow-2xs text-left transition-all group cursor-pointer active:scale-98"
+          >
+            <div className="w-9 h-9 rounded-xl bg-[#EAF2E9] text-[#668064] flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
+              <Calendar className="w-4 h-4" />
+            </div>
+            <span className="font-bold text-xs text-[#38271C] block truncate">Weekly Report</span>
+            <span className="text-[10px] text-[#806A56] mt-0.5 block truncate">Auto matrix & PDF</span>
+          </button>
+
+          {/* Action 7: Monthly Report */}
+          <button
+            onClick={() => onNavigateTab('monthly')}
+            className="p-3.5 bg-[#FFF9F1] hover:bg-white border border-[#E6D8C7] rounded-2xl shadow-2xs text-left transition-all group cursor-pointer active:scale-98 col-span-2 sm:col-span-1"
+          >
+            <div className="w-9 h-9 rounded-xl bg-[#F0F5FA] text-[#2B6CB0] flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
+              <FileSpreadsheet className="w-4 h-4" />
+            </div>
+            <span className="font-bold text-xs text-[#38271C] block truncate">Monthly Report</span>
+            <span className="text-[10px] text-[#806A56] mt-0.5 block truncate">Full month & PDF</span>
           </button>
         </div>
       </div>

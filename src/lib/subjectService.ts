@@ -2,6 +2,7 @@ import { db } from './firebase';
 import {
   collection,
   doc,
+  getDoc,
   setDoc,
   deleteDoc,
   getDocs,
@@ -32,6 +33,23 @@ function notifySubjectSubscribers() {
 
 export function getCachedSubjects(): SubjectConfig[] {
   return subjectsCache;
+}
+
+/**
+ * Immediately updates a subject in memory cache and notifies all listeners,
+ * guaranteeing zero-latency UI reflection when a teacher claims or is assigned a subject.
+ */
+export function updateSubjectInCache(subject: Partial<SubjectConfig> & { id: string }): void {
+  const cleanId = subject.id.trim();
+  const existingIdx = subjectsCache.findIndex(
+    (s) => s.id === cleanId || (subject.code && s.code.toUpperCase() === subject.code.toUpperCase())
+  );
+  if (existingIdx >= 0) {
+    subjectsCache[existingIdx] = { ...subjectsCache[existingIdx], ...subject } as SubjectConfig;
+  } else {
+    subjectsCache.push(subject as SubjectConfig);
+  }
+  notifySubjectSubscribers();
 }
 
 /**
@@ -612,6 +630,122 @@ export async function revokeSubjectTeacher(payload: {
 }
 
 /**
+ * Vacates all subjects occupied by a specific teacher when their account is deleted or faculty role revoked.
+ * Sets subjects to 'Unassigned' while PRESERVING 100% of curriculum documents, lecture notes, assignments,
+ * student submissions, and attendance history.
+ */
+export async function vacateSubjectsForTeacher(payload: {
+  teacherUid?: string;
+  teacherEmail?: string;
+  adminEmail: string;
+  reason?: string;
+}): Promise<{ success: boolean; vacatedSubjectIds: string[]; error?: string }> {
+  const { teacherUid, teacherEmail, adminEmail, reason = 'Teacher Account Deletion / Vacancy' } = payload;
+  const cleanUid = (teacherUid || '').trim();
+  const cleanEmail = (teacherEmail || '').trim().toLowerCase();
+  const nowIso = new Date().toISOString();
+  const vacatedSubjectIds: string[] = [];
+
+  // Update in-memory subjects cache immediately
+  subjectsCache = subjectsCache.map((subj) => {
+    const matches =
+      (cleanUid && subj.teacherUid === cleanUid) ||
+      (cleanEmail && subj.teacherEmail?.toLowerCase() === cleanEmail);
+
+    if (matches) {
+      vacatedSubjectIds.push(subj.id);
+      return {
+        ...subj,
+        assignedTeacher: null,
+        teacherEmail: null,
+        teacherUid: null,
+        assignmentId: null,
+        status: 'Unassigned',
+        teacherAssignedAt: null,
+      };
+    }
+    return subj;
+  });
+  notifySubjectSubscribers();
+
+  if (db) {
+    try {
+      // 1. Find all subjects in Firestore matching teacherUid or teacherEmail
+      const subjectsCol = collection(db, 'subjects');
+      const allSubjectsSnap = await getDocs(subjectsCol);
+
+      for (const subjDoc of allSubjectsSnap.docs) {
+        const d = subjDoc.data();
+        const matches =
+          (cleanUid && (d.teacherUid === cleanUid || d.assignedTeacherUid === cleanUid)) ||
+          (cleanEmail && (d.teacherEmail?.toLowerCase() === cleanEmail || d.assignedTeacherEmail?.toLowerCase() === cleanEmail));
+
+        if (matches) {
+          if (!vacatedSubjectIds.includes(subjDoc.id)) {
+            vacatedSubjectIds.push(subjDoc.id);
+          }
+          await setDoc(
+            doc(db, 'subjects', subjDoc.id),
+            {
+              assignedTeacher: null,
+              teacherEmail: null,
+              teacherUid: null,
+              status: 'Unassigned',
+              assignmentId: null,
+              teacherAssignedAt: null,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+      }
+
+      // 2. Revoke any active assignments in subjectTeacherAssignments
+      const staCol = collection(db, 'subjectTeacherAssignments');
+      const staSnap = await getDocs(staCol);
+      for (const staDoc of staSnap.docs) {
+        const d = staDoc.data();
+        if (d.status === 'active') {
+          const matches =
+            (cleanUid && d.teacherUid === cleanUid) ||
+            (cleanEmail && d.teacherEmail?.toLowerCase() === cleanEmail);
+          if (matches) {
+            await setDoc(
+              doc(db, 'subjectTeacherAssignments', staDoc.id),
+              {
+                status: 'revoked',
+                revokedAt: nowIso,
+                revokedBy: adminEmail,
+                revocationReason: reason,
+              },
+              { merge: true }
+            );
+          }
+        }
+      }
+
+      // 3. Record audit log
+      if (vacatedSubjectIds.length > 0) {
+        await recordAuditLog({
+          action: 'Subjects Vacated on Faculty Deletion',
+          performedBy: adminEmail,
+          details: `Vacated ${vacatedSubjectIds.length} subjects (${vacatedSubjectIds.join(', ')}) due to teacher account deletion/revocation (${cleanEmail || cleanUid}). All academic documents, assignments, and submissions preserved.`,
+          category: 'academic',
+          status: 'warning',
+        });
+      }
+
+      return { success: true, vacatedSubjectIds };
+    } catch (err: any) {
+      console.error('[Subject Service] Vacate subjects error:', err);
+      return { success: false, vacatedSubjectIds, error: err?.message || 'Failed to vacate subjects.' };
+    }
+  }
+
+  return { success: true, vacatedSubjectIds };
+}
+
+/**
  * Confirms and keeps the current teacher active without recreating the assignment.
  */
 export async function keepSubjectTeacherActive(payload: {
@@ -899,6 +1033,25 @@ export async function repairTeacherSubjectAssignments(
             { merge: true }
           ).catch(() => {});
 
+          // Ensure teacherAssignments doc is written for RBAC sync
+          const teacherDocId = `teacher_${(cEmail || cleanEmail).replace(/[@.]/g, '_')}`;
+          setDoc(
+            doc(db, 'teacherAssignments', teacherDocId),
+            {
+              id: teacherDocId,
+              uid: cUid || cleanUid,
+              email: cEmail || cleanEmail,
+              name: data.claimedByName || 'Faculty Instructor',
+              panelType: 'teacher',
+              assignedSubjects: [matchedSubj.name, matchedSubj.code, matchedSubj.id],
+              assignedClass: matchedSubj.assignedClass || '',
+              status: 'active',
+              grantedAt: new Date().toISOString(),
+              grantedBy: 'System Invitation Repair',
+            },
+            { merge: true }
+          ).catch(() => {});
+
           // Ensure invitation doc is marked claimed
           if (data.status !== 'claimed') {
             setDoc(doc(db, 'subjectInvitations', d.id), { status: 'claimed', claimedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
@@ -918,9 +1071,112 @@ export async function repairTeacherSubjectAssignments(
           if (cEmail || cleanEmail) {
             setDoc(doc(db, 'users', (cEmail || cleanEmail).replace(/[@.]/g, '_')), uPayload, { merge: true }).catch(() => {});
           }
+          updateSubjectInCache(fullSubj);
         }
       }
     });
+
+    // 4. Check user profile directly in users collection for assignedSubjects or teacher role
+    const userAssignedNames: string[] = [];
+    let userFoundName = '';
+    try {
+      if (cleanUid) {
+        const uSnap = await getDoc(doc(db, 'users', cleanUid));
+        if (uSnap.exists()) {
+          const uData = uSnap.data();
+          if (uData.name) userFoundName = uData.name;
+          if (Array.isArray(uData.assignedSubjects)) {
+            userAssignedNames.push(...uData.assignedSubjects);
+          }
+        }
+      }
+      if (cleanEmail) {
+        const uSnap = await getDoc(doc(db, 'users', cleanEmail.replace(/[@.]/g, '_')));
+        if (uSnap.exists()) {
+          const uData = uSnap.data();
+          if (uData.name && !userFoundName) userFoundName = uData.name;
+          if (Array.isArray(uData.assignedSubjects)) {
+            userAssignedNames.push(...uData.assignedSubjects);
+          }
+        }
+      }
+    } catch (e) {}
+
+    for (const nameOrCode of userAssignedNames) {
+      if (!nameOrCode) continue;
+      const cleanTarget = nameOrCode.trim().toLowerCase();
+      const matched = allSubjects.find(
+        (s) =>
+          s.name.trim().toLowerCase() === cleanTarget ||
+          s.code.trim().toLowerCase() === cleanTarget ||
+          s.id.trim().toLowerCase() === cleanTarget
+      );
+      if (matched && !repairedSubjectsMap.has(matched.id)) {
+        const resolvedTeacherName = userFoundName || matched.assignedTeacher || 'Faculty Instructor';
+        const fullSubj: SubjectConfig = {
+          ...matched,
+          status: 'Assigned',
+          teacherEmail: cleanEmail || matched.teacherEmail,
+          teacherUid: cleanUid || matched.teacherUid,
+          assignedTeacher: resolvedTeacherName,
+        };
+        repairedSubjectsMap.set(matched.id, fullSubj);
+
+        // Auto-heal in Firestore
+        const staId = `sta_${matched.id}_${cleanUid || 'teacher'}_auto`;
+        setDoc(
+          doc(db, 'subjectTeacherAssignments', staId),
+          {
+            id: staId,
+            subjectId: matched.id,
+            subjectName: matched.name,
+            subjectCode: matched.code,
+            assignedClass: matched.assignedClass || '',
+            teacherUid: cleanUid,
+            teacherEmail: cleanEmail,
+            teacherName: resolvedTeacherName,
+            status: 'active',
+            assignedBy: 'User Profile Subject Match',
+            assignedAt: new Date().toISOString(),
+            lastConfirmedActiveAt: new Date().toISOString(),
+          },
+          { merge: true }
+        ).catch(() => {});
+
+        const teacherDocId = `teacher_${cleanEmail.replace(/[@.]/g, '_')}`;
+        setDoc(
+          doc(db, 'teacherAssignments', teacherDocId),
+          {
+            id: teacherDocId,
+            uid: cleanUid,
+            email: cleanEmail,
+            name: resolvedTeacherName,
+            panelType: 'teacher',
+            assignedSubjects: [matched.name, matched.code, matched.id],
+            assignedClass: matched.assignedClass || '',
+            status: 'active',
+            grantedAt: new Date().toISOString(),
+            grantedBy: 'User Profile Subject Match',
+          },
+          { merge: true }
+        ).catch(() => {});
+
+        setDoc(
+          doc(db, 'subjects', matched.id),
+          cleanPayloadForFirestore({
+            assignedTeacher: resolvedTeacherName,
+            teacherEmail: cleanEmail,
+            teacherUid: cleanUid,
+            status: 'Assigned',
+            teacherAssignedAt: new Date().toISOString(),
+            assignmentId: staId,
+            updatedAt: serverTimestamp(),
+          }),
+          { merge: true }
+        ).catch(() => {});
+        updateSubjectInCache(fullSubj);
+      }
+    }
   } catch (err) {
     console.info('[Subject Service] Auto-repair execution notice:', err);
   }

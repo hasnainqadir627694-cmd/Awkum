@@ -42,11 +42,15 @@ import {
   grantCRAccess,
   grantTeacherAccess,
   revokeCRAccess,
+  revokeTeacherAccess,
+  deleteUserAccountCompletely,
+  reconcileAllAccountsWithAuth,
   subscribeToAllUsers,
   getAllRegisteredUsersFromFirestore,
   getRegisteredUsers,
   updateUserAccountStatus,
 } from '../../lib/authService';
+import { revokeSubjectTeacher } from '../../lib/subjectService';
 
 interface AdminLayoutProps {
   currentUser: AdminUser;
@@ -162,6 +166,43 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
           return u;
         })
     );
+  };
+
+  const handleDeleteUserCompletely = async (targetUser: AdminUser) => {
+    const res = await deleteUserAccountCompletely(currentUser.email, targetUser);
+    if (res.success) {
+      setUsers((prev) =>
+        prev.filter((u) => u.email.toLowerCase() !== targetUser.email.toLowerCase() && u.id !== targetUser.id)
+      );
+      const logItem: AuditLogItem = {
+        id: `log-${Date.now()}`,
+        action: 'User Account Completely Deleted',
+        performedBy: currentUser.email,
+        details: `Deleted ${targetUser.name} (${targetUser.email}, UID: ${targetUser.uid || 'N/A'}) - Roles revoked & subjects vacated.`,
+        timestamp: 'Just now',
+        category: 'security',
+        status: 'warning',
+      };
+      setAuditLogs((prevLogs) => [logItem, ...prevLogs]);
+    }
+  };
+
+  const handleRevokeRole = async (targetUser: AdminUser, role: 'teacher' | 'cr', subjectId?: string) => {
+    if (role === 'teacher') {
+      if (subjectId) {
+        await revokeSubjectTeacher({ subjectId, adminEmail: currentUser.email });
+      } else {
+        await revokeTeacherAccess(currentUser.email, targetUser.email);
+      }
+    } else if (role === 'cr') {
+      await revokeCRAccess(currentUser.email, targetUser.email);
+    }
+    await handleRefreshFirebaseUsers();
+  };
+
+  const handleReconcileAll = async () => {
+    await reconcileAllAccountsWithAuth(currentUser.email);
+    await handleRefreshFirebaseUsers();
   };
 
   // Save Role Assignment
@@ -488,6 +529,9 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ currentUser, onLogout 
             <UserManagementView
               users={users}
               onUpdateUser={handleUpdateUser}
+              onDeleteUserCompletely={handleDeleteUserCompletely}
+              onRevokeRole={handleRevokeRole}
+              onReconcileAll={handleReconcileAll}
               onNavigateToTeacherAssignments={() => setActiveView('teachers')}
               onNavigateToCRAssignments={() => setActiveView('crs')}
               onRefreshFirebase={handleRefreshFirebaseUsers}
