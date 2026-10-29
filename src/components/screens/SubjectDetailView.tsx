@@ -15,6 +15,7 @@ import {
   X,
   ExternalLink,
   ChevronRight,
+  Paperclip,
 } from 'lucide-react';
 import {
   SubjectInfo,
@@ -22,6 +23,7 @@ import {
   AssignmentItem,
   NoticeItem,
 } from '../../data/portalData';
+import { VoiceInstructionPlayer } from '../common/VoiceInstructionPlayer';
 
 interface SubjectDetailViewProps {
   subject: SubjectInfo;
@@ -249,10 +251,10 @@ export const SubjectDetailView: React.FC<SubjectDetailViewProps> = ({
         <div className="space-y-2.5">
           {subjectAsgs.length === 0 ? (
             <div className="p-8 text-center bg-[#FFF9F1] border border-[#E6D8C7] rounded-2xl">
-              <CheckSquare className="w-8 h-8 text-[#806A56] mx-auto mb-2" />
+              <CheckSquare className="w-8 h-8 text-[#806A56] mx-auto mb-2 opacity-50" />
               <h4 className="text-xs font-bold text-[#38271C]">No assignments for this subject</h4>
               <p className="text-[11px] text-[#806A56] mt-0.5">
-                All upcoming tasks will appear here.
+                All upcoming course tasks, voice instructions, and homework will appear here.
               </p>
             </div>
           ) : (
@@ -260,42 +262,75 @@ export const SubjectDetailView: React.FC<SubjectDetailViewProps> = ({
               <div
                 key={asg.id}
                 onClick={() => onOpenAssignment(asg)}
-                className="p-3.5 bg-[#FFF9F1] border border-[#E6D8C7] rounded-xl hover:border-[#493222] transition-colors cursor-pointer group shadow-2xs"
+                className="p-4 bg-[#FFF9F1] border border-[#E6D8C7] rounded-2xl hover:border-[#493222] transition-colors cursor-pointer group shadow-2xs space-y-2.5"
               >
                 <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-[10px] font-bold text-[#806A56]">
-                        {asg.totalMarks} Marks
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <span className="text-[10px] font-extrabold text-[#493222] bg-[#EFE3D3] px-2 py-0.5 rounded-md">
+                        {asg.totalMarks || 10} Marks
                       </span>
                       {asg.status === 'todo' && (
-                        <span className="text-[10px] font-bold text-[#C84B31] bg-[#FDE8E4] px-1.5 py-0.2 rounded">
+                        <span className="text-[10px] font-bold text-[#C84B31] bg-[#FDE8E4] px-2 py-0.5 rounded-full">
                           To Do
                         </span>
                       )}
                       {asg.status === 'submitted' && (
-                        <span className="text-[10px] font-bold text-[#668064] bg-[#EAF2E9] px-1.5 py-0.2 rounded">
+                        <span className="text-[10px] font-bold text-[#668064] bg-[#EAF2E9] px-2 py-0.5 rounded-full">
                           Submitted
                         </span>
                       )}
                       {asg.status === 'graded' && (
-                        <span className="text-[10px] font-bold text-[#493222] bg-[#EFE3D3] px-1.5 py-0.2 rounded">
+                        <span className="text-[10px] font-bold text-[#493222] bg-[#EFE3D3] px-2 py-0.5 rounded-full">
                           Graded: {asg.grade}
                         </span>
                       )}
+                      {asg.status === 'closed' && (
+                        <span className="text-[10px] font-bold text-[#C84B31] bg-[#FDE8E4] px-2 py-0.5 rounded-full">
+                          Closed
+                        </span>
+                      )}
                     </div>
-                    <h4 className="text-xs font-bold text-[#38271C] group-hover:text-[#493222]">
+                    <h4 className="text-xs sm:text-sm font-extrabold text-[#38271C] group-hover:text-[#493222]">
                       {asg.title}
                     </h4>
-                    <p className="text-[11px] text-[#806A56] line-clamp-2 mt-1">
-                      {asg.questionPreview}
-                    </p>
+                    {(asg.description || asg.questionPreview) && (
+                      <p className="text-[11px] text-[#806A56] line-clamp-2 mt-1 leading-relaxed">
+                        {asg.description || asg.questionPreview}
+                      </p>
+                    )}
                   </div>
-                  <ChevronRight className="w-4 h-4 text-[#806A56] shrink-0 mt-1" />
+                  <ChevronRight className="w-4 h-4 text-[#806A56] shrink-0 mt-1 group-hover:translate-x-0.5 transition-transform" />
                 </div>
-                <div className="flex items-center justify-between text-[10px] text-[#806A56] mt-2 pt-2 border-t border-[#E6D8C7]">
-                  <span>Due: {asg.dueDate} at {asg.dueTime}</span>
-                  <span className="text-[#493222] font-semibold">View & Submit →</span>
+
+                {asg.voiceInstructionUrl && (
+                  <div className="pt-0.5">
+                    <VoiceInstructionPlayer
+                      audioUrl={asg.voiceInstructionUrl}
+                      durationFormatted={asg.voiceInstructionDurationFormatted}
+                      title="Instructor Voice Note"
+                      compact={true}
+                    />
+                  </div>
+                )}
+
+                {asg.attachedFileName && (
+                  <div className="p-2 bg-white border border-[#E6D8C7] rounded-xl flex items-center justify-between text-xs text-[#493222]">
+                    <div className="flex items-center gap-1.5 truncate text-[11px] font-semibold">
+                      <Paperclip className="w-3.5 h-3.5 text-[#806A56] shrink-0" />
+                      <span className="truncate">{asg.attachedFileName}</span>
+                    </div>
+                    {asg.attachedFileUrl && (
+                      <span className="text-[10px] font-bold text-[#493222] underline shrink-0 ml-2">
+                        View File
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between text-[10px] text-[#806A56] pt-2 border-t border-[#E6D8C7]">
+                  <span>Due: {asg.dueDate} {asg.dueTime ? `(${asg.dueTime})` : ''}</span>
+                  <span className="text-[#493222] font-bold">View & Submit →</span>
                 </div>
               </div>
             ))

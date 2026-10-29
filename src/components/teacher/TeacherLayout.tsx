@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   LayoutDashboard,
   Users,
@@ -38,6 +38,7 @@ import {
 import {
   subscribeToTeacherIncomingAlerts,
   TeacherAlertRecord,
+  playTeacherArrivalAlarmAndVibration,
 } from '../../lib/teacherAlertService';
 import { subscribeToTeacherAssignedSubjects, repairTeacherSubjectAssignments } from '../../lib/subjectService';
 import { claimTeacherInvitation, validateInvitationCredentials } from '../../lib/teacherInvitationService';
@@ -80,6 +81,9 @@ export const TeacherLayout: React.FC<TeacherLayoutProps> = ({
   const [notices, setNotices] = useState<NoticeItem[]>([]);
   const [roster, setRoster] = useState<ClassStudentItem[]>([]);
   const [incomingAlerts, setIncomingAlerts] = useState<TeacherAlertRecord[]>([]);
+  const [activeArrivalAlert, setActiveArrivalAlert] = useState<TeacherAlertRecord | null>(null);
+  const knownAlertIdsRef = useRef<Set<string>>(new Set());
+  const isInitialAlertLoadRef = useRef<boolean>(true);
 
   // Self-healing & Direct Subject Claiming state for faculty
   const [isCheckingUpdates, setIsCheckingUpdates] = useState<boolean>(false);
@@ -241,11 +245,23 @@ export const TeacherLayout: React.FC<TeacherLayoutProps> = ({
     setRoster(students);
   }, [selectedSubject?.assignedClass, currentUser.assignedClass]);
 
-  // 6. Subscribe to CR arrival reminder alerts
+  // 6. Subscribe to CR arrival reminder alerts with audible alarm and vibration
   useEffect(() => {
     if (!currentUser.email) return;
     const unsubscribe = subscribeToTeacherIncomingAlerts(currentUser.email, (alerts) => {
       setIncomingAlerts(alerts);
+
+      if (alerts && alerts.length > 0) {
+        if (!isInitialAlertLoadRef.current) {
+          const newAlert = alerts.find((a) => !knownAlertIdsRef.current.has(a.id));
+          if (newAlert) {
+            playTeacherArrivalAlarmAndVibration();
+            setActiveArrivalAlert(newAlert);
+          }
+        }
+        alerts.forEach((a) => knownAlertIdsRef.current.add(a.id));
+      }
+      isInitialAlertLoadRef.current = false;
     });
     return () => unsubscribe();
   }, [currentUser.email]);
@@ -457,6 +473,48 @@ export const TeacherLayout: React.FC<TeacherLayoutProps> = ({
             </div>
           </div>
         </header>
+
+        {/* Incoming CR Arrival Alarm Banner */}
+        {activeArrivalAlert && (
+          <div className="mx-4 mt-3 p-4 bg-[#FDE8E4] border-2 border-[#C84B31] rounded-3xl shadow-md flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-[#C84B31] text-white flex items-center justify-center shrink-0 shadow-xs">
+                <Bell className="w-5 h-5 fill-current animate-bounce" />
+              </div>
+              <div>
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#C84B31] block">
+                  Incoming Class Alert from CR
+                </span>
+                <h4 className="text-sm font-bold text-[#38271C]">
+                  {activeArrivalAlert.sentByCRName} ({activeArrivalAlert.classId})
+                </h4>
+                <p className="text-xs text-[#493222] mt-0.5 leading-relaxed">
+                  {activeArrivalAlert.message}
+                </p>
+                <span className="text-[10px] text-[#806A56] font-semibold mt-1 block">
+                  Room: {activeArrivalAlert.room} · Time: {activeArrivalAlert.scheduledTime} · {activeArrivalAlert.sentAt}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+              <button
+                type="button"
+                onClick={() => playTeacherArrivalAlarmAndVibration()}
+                className="px-3 py-1.5 bg-[#FFFDF9] border border-[#C84B31] text-[#C84B31] text-xs font-bold rounded-xl transition-colors cursor-pointer"
+              >
+                Replay Chime
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveArrivalAlert(null)}
+                className="px-3.5 py-1.5 bg-[#C84B31] hover:bg-[#A73B24] text-white text-xs font-bold rounded-xl transition-all cursor-pointer shadow-2xs"
+              >
+                Acknowledge & Dismiss
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Main Content View Container */}
         <main className="p-4 flex-1">

@@ -10,6 +10,7 @@ import {
   onSnapshot,
   serverTimestamp,
   updateDoc,
+  deleteDoc,
 } from 'firebase/firestore';
 import { AssignmentItem, DocumentItem, NoticeItem } from '../data/portalData';
 import { uploadToCloudinary, fileToDataUrl } from './cloudinary';
@@ -17,11 +18,15 @@ import { uploadToCloudinary, fileToDataUrl } from './cloudinary';
 export interface TeacherSubmissionItem {
   id: string;
   assignmentId: string;
+  subjectId?: string;
+  subjectName?: string;
   studentId: string;
   studentName: string;
+  studentEmail?: string;
   submittedContent?: string;
   submittedFileName?: string;
   fileUrl?: string;
+  isLate?: boolean;
   timestamp?: string;
   submittedAt?: string;
   grade?: number | string;
@@ -75,18 +80,26 @@ export function subscribeToTeacherAssignments(
                 subjectName: data.subjectName || data.subject || targetName || targetId || 'Subject Assignment',
                 subjectId: data.subjectId || targetId || 's-assigned',
                 teacher: data.authorName || data.teacher || 'Subject Instructor',
+                teacherEmail: data.authorEmail || data.teacherEmail || undefined,
+                teacherUid: data.teacherUid || undefined,
+                targetClass: data.targetClass || undefined,
                 questionPreview: data.description || data.questionPreview || 'Course assignment',
                 fullInstructions: data.description || data.fullInstructions || '',
                 dueDate: data.dueDate || 'No Due Date',
                 dueTime: data.dueTime || '11:59 PM',
+                deadlineAt: data.deadlineAt || undefined,
                 status: data.status || 'active',
                 submittedCount: data.submittedCount || 0,
                 totalStudents: data.totalStudents || 45,
                 description: data.description || '',
                 totalMarks: data.totalMarks || 10,
-                allowLate: !!data.allowLate,
-                attachedFileName: data.attachedFileName || undefined,
-                attachedFileUrl: data.attachedFileUrl || undefined,
+                allowLate: data.allowLate !== undefined ? !!data.allowLate : false,
+                attachedFileName: data.attachedFileName || data.attachmentName || undefined,
+                attachedFileUrl: data.attachedFileUrl || data.attachmentUrl || undefined,
+                attachedFileSize: data.attachedFileSize || data.attachmentSize || undefined,
+                voiceInstructionUrl: data.voiceInstructionUrl || undefined,
+                voiceInstructionDuration: data.voiceInstructionDuration || undefined,
+                voiceInstructionDurationFormatted: data.voiceInstructionDurationFormatted || undefined,
                 createdDate: data.createdDate || 'Recent',
               });
             }
@@ -132,11 +145,15 @@ export function subscribeToAssignmentSubmissions(
               list.push({
                 id: d.id,
                 assignmentId: data.assignmentId,
+                subjectId: data.subjectId || undefined,
+                subjectName: data.subjectName || undefined,
                 studentId: data.studentId || 'st-unknown',
                 studentName: data.studentName || 'Enrolled Student',
+                studentEmail: data.studentEmail || undefined,
                 submittedContent: data.submittedContent || data.submittedText || '',
                 submittedFileName: data.submittedFileName || data.fileName || '',
                 fileUrl: data.fileUrl || undefined,
+                isLate: !!data.isLate,
                 timestamp: data.timestamp?.toDate
                   ? data.timestamp.toDate().toLocaleString()
                   : data.submittedAt || 'Recent',
@@ -150,6 +167,12 @@ export function subscribeToAssignmentSubmissions(
               });
             }
           }
+        });
+        // Sort submissions newest first
+        list.sort((a, b) => {
+          const timeA = new Date(a.submittedAt || a.timestamp || 0).getTime();
+          const timeB = new Date(b.submittedAt || b.timestamp || 0).getTime();
+          return timeB - timeA;
         });
         onUpdate(list);
       },
@@ -175,18 +198,30 @@ export async function createTeacherAssignment(payload: {
   title: string;
   description: string;
   dueDate: string;
+  dueTime?: string;
+  deadlineAt?: string;
   totalMarks: number;
   allowLate: boolean;
   attachedFile?: File | null;
+  attachedFileName?: string;
+  attachedFileUrl?: string;
+  attachedFileSize?: string;
+  voiceInstructionUrl?: string;
+  voiceInstructionDuration?: number;
+  voiceInstructionDurationFormatted?: string;
   teacherEmail: string;
   teacherName: string;
+  teacherUid?: string;
   targetClass?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
-  let attachedFileUrl = '';
-  let attachedFileName = '';
+  let attachedFileUrl = payload.attachedFileUrl || '';
+  let attachedFileName = payload.attachedFileName || '';
+  let attachedFileSize = payload.attachedFileSize || '';
 
   if (payload.attachedFile) {
     attachedFileName = payload.attachedFile.name;
+    const sizeKb = Math.round(payload.attachedFile.size / 1024);
+    attachedFileSize = sizeKb > 1024 ? `${(sizeKb / 1024).toFixed(1)} MB` : `${sizeKb} KB`;
     try {
       const uploadRes = await uploadToCloudinary(payload.attachedFile, 'awkum_classhub/assignments');
       attachedFileUrl = uploadRes.secureUrl || uploadRes.url;
@@ -204,6 +239,20 @@ export async function createTeacherAssignment(payload: {
     year: 'numeric',
   });
 
+  // Calculate canonical deadlineAt timestamp if not provided
+  let computedDeadlineAt = payload.deadlineAt;
+  if (!computedDeadlineAt && payload.dueDate) {
+    try {
+      const timeStr = payload.dueTime || '23:59';
+      const parsedDate = new Date(`${payload.dueDate}T${timeStr.includes(':') ? timeStr : '23:59:00'}`);
+      if (!isNaN(parsedDate.getTime())) {
+        computedDeadlineAt = parsedDate.toISOString();
+      }
+    } catch {
+      // fallback
+    }
+  }
+
   const assignmentDoc = {
     subjectId: payload.subjectId,
     subjectName: payload.subjectName,
@@ -211,14 +260,23 @@ export async function createTeacherAssignment(payload: {
     title: payload.title.trim(),
     description: payload.description.trim(),
     dueDate: payload.dueDate,
+    dueTime: payload.dueTime || '11:59 PM',
+    deadlineAt: computedDeadlineAt || null,
     totalMarks: Number(payload.totalMarks) || 10,
-    allowLate: payload.allowLate,
-    attachedFileName,
-    attachedFileUrl,
+    allowLate: !!payload.allowLate,
+    attachedFileName: attachedFileName || null,
+    attachedFileUrl: attachedFileUrl || null,
+    attachedFileSize: attachedFileSize || null,
+    voiceInstructionUrl: payload.voiceInstructionUrl || null,
+    voiceInstructionDuration: payload.voiceInstructionDuration || null,
+    voiceInstructionDurationFormatted: payload.voiceInstructionDurationFormatted || null,
     createdDate,
     status: 'active',
     authorEmail: payload.teacherEmail,
+    teacherEmail: payload.teacherEmail,
     authorName: payload.teacherName,
+    teacher: payload.teacherName,
+    teacherUid: payload.teacherUid || null,
     targetClass: payload.targetClass || 'BSSE 1A',
     submittedCount: 0,
     timestamp: serverTimestamp(),
@@ -234,6 +292,46 @@ export async function createTeacherAssignment(payload: {
   }
 
   return { success: true, id: `asg-${Date.now()}` };
+}
+
+/**
+ * Toggles an assignment between active and closed
+ */
+export async function toggleTeacherAssignmentStatus(
+  assignmentId: string,
+  newStatus: 'active' | 'closed'
+): Promise<{ success: boolean; error?: string }> {
+  if (db && assignmentId) {
+    try {
+      const docRef = doc(db, 'assignments', assignmentId);
+      await updateDoc(docRef, {
+        status: newStatus,
+        updatedAt: serverTimestamp(),
+      });
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to update assignment status.' };
+    }
+  }
+  return { success: true };
+}
+
+/**
+ * Permanently deletes an assignment from Firestore
+ */
+export async function deleteTeacherAssignment(
+  assignmentId: string
+): Promise<{ success: boolean; error?: string }> {
+  if (db && assignmentId) {
+    try {
+      const docRef = doc(db, 'assignments', assignmentId);
+      await deleteDoc(docRef);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to delete assignment.' };
+    }
+  }
+  return { success: true };
 }
 
 /**
@@ -269,11 +367,15 @@ export function subscribeToStudentSubmissions(
               list.push({
                 id: d.id,
                 assignmentId: data.assignmentId,
+                subjectId: data.subjectId || undefined,
+                subjectName: data.subjectName || undefined,
                 studentId: data.studentId || studentIdentifier,
                 studentName: data.studentName || 'Student',
+                studentEmail: data.studentEmail || undefined,
                 submittedContent: data.submittedContent || data.submittedText || '',
                 submittedFileName: data.submittedFileName || data.fileName || '',
                 fileUrl: data.fileUrl || undefined,
+                isLate: !!data.isLate,
                 timestamp: data.timestamp?.toDate
                   ? data.timestamp.toDate().toLocaleString()
                   : data.submittedAt || 'Recent',

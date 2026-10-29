@@ -84,21 +84,31 @@ export interface AssignmentItem {
   description?: string;
   dueDate: string;
   dueTime: string;
+  deadlineAt?: string; // ISO 8601 string for server-level deadline checks
   totalMarks: number;
   attachmentName?: string;
   attachmentSize?: string;
   attachedFileName?: string;
   attachedFileUrl?: string;
+  attachedFileSize?: string;
+  voiceInstructionUrl?: string;
+  voiceInstructionDuration?: number; // duration in seconds
+  voiceInstructionDurationFormatted?: string; // e.g. "01:25"
   allowLate?: boolean;
   status: 'todo' | 'submitted' | 'overdue' | 'graded' | 'active' | 'closed';
   submissionDate?: string;
   submittedContent?: string;
   submittedFileName?: string;
+  submittedFileUrl?: string;
   submittedCount?: number;
   totalStudents?: number;
-  grade?: string;
+  grade?: string | number;
   teacherFeedback?: string;
   createdDate?: string;
+  teacherEmail?: string;
+  teacherUid?: string;
+  targetClass?: string;
+  isLate?: boolean;
 }
 
 export interface NotificationItem {

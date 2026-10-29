@@ -152,6 +152,7 @@ export const CRAttendanceMarkingView: React.FC<CRAttendanceMarkingViewProps> = (
         records[st.rollNumber] = {
           studentId: st.id,
           studentName: st.name,
+          studentEmail: st.email,
           rollNumber: st.rollNumber,
           status,
           notes: status === 'present' ? 'Attended' : 'Unexcused / Unmarked',

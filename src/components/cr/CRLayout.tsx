@@ -11,12 +11,13 @@ import {
 } from 'lucide-react';
 import { AdminUser } from '../../data/adminData';
 import { ScheduleItem } from '../../data/portalData';
-import { getEnrolledStudentsForClass, ClassStudentItem } from '../../data/classRosterData';
+import { ClassStudentItem } from '../../data/classRosterData';
 import {
   AttendanceSession,
   getDailyAttendanceSession,
   formatDateKey,
   subscribeToClassAttendance,
+  subscribeToRealClassStudents,
 } from '../../lib/attendanceService';
 import { AwkumEmblem } from '../common/AwkumLogo';
 import { CRDashboardView } from './CRDashboardView';
@@ -55,10 +56,11 @@ export const CRLayout: React.FC<CRLayoutProps> = ({
   const [correctingSession, setCorrectingSession] = useState<AttendanceSession | null>(null);
   const [preselectedNotifyClass, setPreselectedNotifyClass] = useState<ScheduleItem | undefined>(undefined);
 
-  // Load roster and real-time attendance sessions
+  // Load real enrolled students and real-time attendance sessions
   useEffect(() => {
-    const students = getEnrolledStudentsForClass(assignedClass);
-    setRoster(students);
+    const unsubStudents = subscribeToRealClassStudents(assignedClass, currentUser, (realStudents) => {
+      setRoster(realStudents);
+    });
 
     // Initial fetch of today's session
     getDailyAttendanceSession(assignedClass, formatDateKey()).then((sess) => {
@@ -66,7 +68,7 @@ export const CRLayout: React.FC<CRLayoutProps> = ({
     });
 
     // Real-time listener for class attendance sessions
-    const unsubscribe = subscribeToClassAttendance(assignedClass, (sessions) => {
+    const unsubAttendance = subscribeToClassAttendance(assignedClass, (sessions) => {
       setAllSessions(sessions);
       const todayKey = formatDateKey();
       const todayMatch = sessions.find((s) => s.date === todayKey);
@@ -75,8 +77,11 @@ export const CRLayout: React.FC<CRLayoutProps> = ({
       }
     });
 
-    return () => unsubscribe();
-  }, [assignedClass]);
+    return () => {
+      unsubStudents();
+      unsubAttendance();
+    };
+  }, [assignedClass, currentUser]);
 
   const handleOpenNotifyTeacher = (classItem: ScheduleItem) => {
     setPreselectedNotifyClass(classItem);

@@ -12,10 +12,12 @@ import {
 } from 'firebase/firestore';
 import { recordAuditLog, verifyCROperationOnServer } from './authService';
 import { DailyAttendanceRecord } from '../data/portalData';
+import { ClassStudentItem } from '../data/classRosterData';
 
 export interface StudentAttendanceRecord {
   studentId: string;
   studentName: string;
+  studentEmail?: string;
   rollNumber: string;
   status: 'present' | 'absent';
   notes?: string;
@@ -321,7 +323,8 @@ export function subscribeToStudentPersonalAttendance(
           (r) =>
             (r.rollNumber && r.rollNumber.toLowerCase() === cleanRoll) ||
             (r.studentId && r.studentId.toLowerCase() === cleanRoll) ||
-            (cleanEmail && r.studentId && r.studentId.toLowerCase() === cleanEmail)
+            (cleanEmail && r.studentId && r.studentId.toLowerCase() === cleanEmail) ||
+            (cleanEmail && r.studentEmail && r.studentEmail.toLowerCase() === cleanEmail)
         );
 
       if (matchedRecord) {
@@ -352,4 +355,108 @@ export function subscribeToStudentPersonalAttendance(
 
   return unsubscribe;
 }
+
+/**
+ * Subscribes to real registered students for an assigned class from Firestore.
+ * Eliminates fake synthetic rosters and includes the CR themselves as an enrolled student.
+ */
+export function subscribeToRealClassStudents(
+  assignedClass: string,
+  crUser: { id?: string; name?: string; email?: string; studentId?: string; fatherName?: string },
+  onUpdate: (students: ClassStudentItem[]) => void
+): () => void {
+  const cleanClass = assignedClass.trim().toLowerCase();
+
+  const buildCRStudentItem = (): ClassStudentItem | null => {
+    if (!crUser?.email) return null;
+    return {
+      id: crUser.id || `cr-${crUser.email.replace(/[@.]/g, '_')}`,
+      name: `${crUser.name || 'CR Student'} (CR)`,
+      rollNumber: crUser.studentId || (crUser.id && !crUser.id.startsWith('u-') ? crUser.id : 'CR-OFFICIAL'),
+      fatherName: crUser.fatherName || 'Not Recorded',
+      email: crUser.email,
+      class: assignedClass,
+      status: 'active',
+    };
+  };
+
+  if (!db) {
+    const crItem = buildCRStudentItem();
+    onUpdate(crItem ? [crItem] : []);
+    return () => {};
+  }
+
+  try {
+    const usersCol = collection(db, 'users');
+    const unsubscribe = onSnapshot(
+      usersCol,
+      (snapshot) => {
+        const studentMap = new Map<string, ClassStudentItem>();
+
+        snapshot.forEach((d) => {
+          if (!d.exists()) return;
+          const data = d.data();
+          const userClass = (data.assignedClass || '').trim().toLowerCase();
+          const role = (data.role || '').toLowerCase();
+          const roles = Array.isArray(data.roles) ? data.roles.map((r: any) => String(r).toLowerCase()) : [];
+
+          const isStudentRole = role === 'student' || role === 'cr' || roles.includes('student') || roles.includes('cr');
+          const isTeacher = role === 'teacher' || roles.includes('teacher') || data.teacherStatus === 'active';
+
+          if (isStudentRole && !isTeacher) {
+            // Check if student belongs to this class
+            const matchesClass = !userClass || userClass === cleanClass || cleanClass.includes(userClass) || userClass.includes(cleanClass);
+            if (matchesClass) {
+              const email = (data.email || '').trim().toLowerCase();
+              const rollNumber = data.studentId || data.rollNo || data.rollNumber || d.id;
+              const name = data.name || data.fullName || (email.split('@')[0]);
+
+              if (email) {
+                studentMap.set(email, {
+                  id: d.id,
+                  name: data.isCR || role === 'cr' ? `${name} (CR)` : name,
+                  rollNumber,
+                  fatherName: data.fatherName || 'Not Recorded',
+                  email,
+                  class: assignedClass,
+                  status: data.status === 'suspended' ? 'suspended' : 'active',
+                  avatarUrl: data.avatarUrl || undefined,
+                });
+              }
+            }
+          }
+        });
+
+        // Ensure CR is present in roster so CR marks their own attendance
+        if (crUser?.email) {
+          const crEmail = crUser.email.trim().toLowerCase();
+          if (!studentMap.has(crEmail)) {
+            const crItem = buildCRStudentItem();
+            if (crItem) {
+              studentMap.set(crEmail, crItem);
+            }
+          }
+        }
+
+        const studentList = Array.from(studentMap.values()).sort((a, b) =>
+          a.rollNumber.localeCompare(b.rollNumber)
+        );
+        onUpdate(studentList);
+      },
+      (err) => {
+        console.info('[Attendance Service] Real students listener notice:', err.message);
+        const crItem = buildCRStudentItem();
+        onUpdate(crItem ? [crItem] : []);
+      }
+    );
+
+    return unsubscribe;
+  } catch (err) {
+    console.info('[Attendance Service] Real students setup notice:', err);
+    const crItem = buildCRStudentItem();
+    onUpdate(crItem ? [crItem] : []);
+    return () => {};
+  }
+}
+
 

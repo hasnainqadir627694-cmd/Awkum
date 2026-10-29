@@ -49,6 +49,32 @@ export const TeacherAssignmentsView: React.FC<TeacherAssignmentsViewProps> = ({
   onNavigateToSubjects,
   initialSelectedSubjectId = null,
 }) => {
+  const formatSafeDate = (val: any, fallback = 'Recently'): string => {
+    if (!val) return fallback;
+    const str = String(val).trim();
+    if (str === '' || str.toLowerCase().includes('invalid') || str === 'nan') return fallback;
+    try {
+      if (typeof val?.toDate === 'function') {
+        const d = val.toDate();
+        if (!isNaN(d.getTime())) {
+          return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+      }
+      if (val?.seconds && typeof val.seconds === 'number') {
+        const d = new Date(val.seconds * 1000);
+        if (!isNaN(d.getTime())) {
+          return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+      }
+      const d = new Date(val);
+      if (!isNaN(d.getTime())) {
+        const formatted = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        if (formatted && !formatted.toLowerCase().includes('invalid')) return formatted;
+      }
+    } catch {}
+    return fallback;
+  };
+
   const [subjects, setSubjects] = useState<SubjectConfig[]>([]);
   const [selectedSubjectId, setSelectedSubjectId] = useState<string | null>(initialSelectedSubjectId);
   const [activeAssignment, setActiveAssignment] = useState<SubjectTeacherAssignment | null>(null);
@@ -700,12 +726,12 @@ export const TeacherAssignmentsView: React.FC<TeacherAssignmentsViewProps> = ({
                           )}
                           {selectedSubject.teacherAssignedAt && (
                             <span>
-                              Assigned on: {new Date(selectedSubject.teacherAssignedAt).toLocaleDateString()}
+                              Assigned on: {formatSafeDate(selectedSubject.teacherAssignedAt)}
                             </span>
                           )}
                           {selectedSubject.lastConfirmedActiveAt && (
                             <span>
-                              Confirmed active: {new Date(selectedSubject.lastConfirmedActiveAt).toLocaleDateString()}
+                              Confirmed active: {formatSafeDate(selectedSubject.lastConfirmedActiveAt)}
                             </span>
                           )}
                         </div>
@@ -790,11 +816,8 @@ export const TeacherAssignmentsView: React.FC<TeacherAssignmentsViewProps> = ({
                             </div>
 
                             <span className="text-[11px] text-[#806A56]">
-                              Created on{' '}
-                              {activeInvitation
-                                ? new Date(activeInvitation.createdAt).toLocaleDateString()
-                                : new Date().toLocaleDateString()}{' '}
-                              by <span className="font-mono">{activeInvitation?.createdBy || adminEmail}</span>
+                              Created on {formatSafeDate(activeInvitation?.createdAt)} by{' '}
+                              <span className="font-mono">{activeInvitation?.createdBy || adminEmail}</span>
                             </span>
                           </div>
 

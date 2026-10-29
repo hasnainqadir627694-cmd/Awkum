@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Bell, AlertCircle, CheckCircle2, X } from 'lucide-react';
 import {
   StudentProfile,
   INITIAL_STUDENT,
@@ -19,7 +20,7 @@ import { DocumentPreviewModal } from './components/common/DocumentPreviewModal';
 import { AssignmentDetailModal } from './components/common/AssignmentDetailModal';
 import { db, auth } from './lib/firebase';
 import { signOut, onAuthStateChanged } from 'firebase/auth';
-import { collection, addDoc, serverTimestamp, query, onSnapshot } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, query, onSnapshot, doc, setDoc } from 'firebase/firestore';
 import { motion, AnimatePresence } from 'motion/react';
 import { subscribeToUserAccount, markCRAccessAcknowledged, resolveUserRole } from './lib/authService';
 import { subscribeToStudentPersonalAttendance } from './lib/attendanceService';
@@ -128,6 +129,7 @@ export default function App() {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [reminders, setReminders] = useState<Record<string, { enabled: boolean; minutes: number }>>({});
   const [studentSubmissions, setStudentSubmissions] = useState<TeacherSubmissionItem[]>([]);
+  const [announcementPopup, setAnnouncementPopup] = useState<NoticeItem | null>(null);
 
   const [publishedScheduleItems, setPublishedScheduleItems] = useState<ScheduleItem[]>(SCHEDULE_ITEMS);
   const [publishedSchedule, setPublishedSchedule] = useState<RecurringSchedule | null>(null);
@@ -201,13 +203,20 @@ export default function App() {
     assignmentId: string,
     answerText: string,
     fileName: string,
-    fileUrl?: string
+    fileUrl?: string,
+    isLate?: boolean
   ) => {
     const now = new Date();
-    const formattedDate = `Oct 19, 2026 at ${now.toLocaleTimeString([], {
+    const formattedDate = `${now.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    })} at ${now.toLocaleTimeString([], {
       hour: '2-digit',
       minute: '2-digit',
     })}`;
+
+    const targetAsg = assignments.find((a) => a.id === assignmentId);
 
     setAssignments((prev) =>
       prev.map((asg) =>
@@ -218,6 +227,8 @@ export default function App() {
               submissionDate: formattedDate,
               submittedContent: answerText,
               submittedFileName: fileName,
+              submittedFileUrl: fileUrl,
+              isLate: !!isLate,
             }
           : asg
       )
@@ -232,26 +243,40 @@ export default function App() {
             submissionDate: formattedDate,
             submittedContent: answerText,
             submittedFileName: fileName,
+            submittedFileUrl: fileUrl,
+            isLate: !!isLate,
           }
         : prev
     );
 
-    // Persist to Cloud Firestore if permitted by security rules
+    // Persist to Cloud Firestore strictly bound to this assignment and subject
     if (db) {
-      addDoc(collection(db, 'submissions'), {
-        assignmentId,
-        studentId: student.id,
-        studentEmail: student.email || currentUser?.email || '',
-        uid: currentUser?.uid || student.id,
-        studentName: student.name,
-        submittedContent: answerText,
-        submittedFileName: fileName,
-        fileUrl: fileUrl || null,
-        storageProvider: fileUrl ? 'cloudinary' : 'local',
-        status: 'submitted',
-        submittedAt: formattedDate,
-        timestamp: serverTimestamp(),
-      }).catch((err) => {
+      const cleanStudentKey = (student.email || student.id || currentUser?.uid || 'st').replace(/[^a-zA-Z0-9]/g, '_');
+      const subDocId = `${assignmentId}_${cleanStudentKey}`;
+
+      setDoc(
+        doc(db, 'submissions', subDocId),
+        {
+          assignmentId,
+          subjectId: targetAsg?.subjectId || null,
+          subjectName: targetAsg?.subjectName || null,
+          assignmentTitle: targetAsg?.title || null,
+          studentId: student.id,
+          studentEmail: student.email || currentUser?.email || '',
+          uid: currentUser?.uid || student.id,
+          studentName: student.name,
+          submittedContent: answerText,
+          submittedFileName: fileName,
+          fileUrl: fileUrl || null,
+          storageProvider: fileUrl ? 'cloudinary' : 'local',
+          status: 'submitted',
+          isLate: !!isLate,
+          submittedAt: formattedDate,
+          timestamp: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      ).catch((err) => {
         console.info('[Firestore] Submission recorded in student session. Remote sync awaiting authenticated user:', err?.message || err);
       });
     }
@@ -261,7 +286,7 @@ export default function App() {
       id: `notif-${Date.now()}`,
       title: 'Assignment Submitted',
       category: 'Assignments',
-      message: 'Your work for assignment was submitted successfully via Cloudinary.',
+      message: `Your work for "${targetAsg?.title || 'Assignment'}" was submitted successfully.`,
       timestamp: 'Just now',
       read: false,
       actionTarget: {
@@ -269,6 +294,21 @@ export default function App() {
       },
     };
     setNotifications((prev) => [newNotif, ...prev]);
+  };
+
+  const handleAcknowledgeAnnouncement = (noticeId: string) => {
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('awkum_acknowledged_announcements');
+        const ids = new Set<string>(raw ? JSON.parse(raw) : []);
+        ids.add(noticeId);
+        localStorage.setItem('awkum_acknowledged_announcements', JSON.stringify(Array.from(ids)));
+      } catch {}
+    }
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === `announcement-${noticeId}` ? { ...n, read: true } : n))
+    );
+    setAnnouncementPopup(null);
   };
 
   const handleMarkAllAsRead = () => {
@@ -601,20 +641,16 @@ export default function App() {
   useEffect(() => {
     if (!currentUser || userRole === 'master_admin') return;
 
-    const classId = currentUser.assignedClass;
-    if (!classId) {
-      setAttendanceRecords([]);
-      return;
-    }
-    const studentId = currentUser.studentId || currentUser.id;
-    const email = currentUser.email;
+    const classId = currentUser.assignedClass || (student.section ? `BSSE ${student.section}` : 'BSSE 1A');
+    const studentId = currentUser.studentId || currentUser.id || student.id;
+    const email = currentUser.email || student.email;
 
     const unsubscribe = subscribeToStudentPersonalAttendance(classId, studentId, email, (records) => {
       setAttendanceRecords(records);
     });
 
     return () => unsubscribe();
-  }, [currentUser?.email, currentUser?.assignedClass, currentUser?.studentId, userRole]);
+  }, [currentUser?.email, currentUser?.assignedClass, currentUser?.studentId, student.section, userRole]);
 
   // 4. Real-time Curriculum Subjects Subscription (Master Admin -> Portal sync)
   useEffect(() => {
@@ -659,7 +695,7 @@ export default function App() {
 
     const studentClass = (currentUser?.assignedClass || (student.section ? `BSSE ${student.section}` : 'BSSE 1A')).trim().toLowerCase();
 
-    // A. Real assignments
+    // A. Real assignments with strict per-assignment submission isolation
     let unsubAssignments = () => {};
     try {
       unsubAssignments = onSnapshot(collection(db, 'assignments'), (snapshot) => {
@@ -670,16 +706,20 @@ export default function App() {
           if (d.exists()) {
             const data = d.data();
             const mySub = submissionMap.get(d.id);
+            const isClosed = data.status === 'closed';
+
             list.push({
               id: d.id,
               ...data,
-              status: mySub ? mySub.status : data.status || 'todo',
-              grade: mySub?.grade !== undefined ? mySub.grade : data.grade,
-              feedback: mySub?.feedback || data.feedback,
-              submissionDate: mySub?.submittedAt || mySub?.timestamp || data.submissionDate,
-              submittedContent: mySub?.submittedContent || data.submittedContent,
-              submittedFileName: mySub?.submittedFileName || data.submittedFileName,
-              fileUrl: mySub?.fileUrl || data.fileUrl,
+              // Strictly isolate submission fields: ONLY show if this student submitted for this assignment
+              status: mySub ? mySub.status : (isClosed ? 'closed' : 'todo'),
+              grade: mySub?.grade !== undefined ? mySub.grade : undefined,
+              feedback: mySub?.feedback || undefined,
+              submissionDate: mySub?.submittedAt || mySub?.timestamp || undefined,
+              submittedContent: mySub?.submittedContent || undefined,
+              submittedFileName: mySub?.submittedFileName || undefined,
+              fileUrl: mySub?.fileUrl || undefined,
+              isLate: mySub?.isLate || false,
             } as unknown as AssignmentItem);
           }
         });
@@ -706,11 +746,17 @@ export default function App() {
       });
     } catch (e) {}
 
-    // C. Real announcements
+    // C. Real announcements: pops up on student account and permanently retained in bell notifications
     let unsubNotices = () => {};
     try {
       unsubNotices = onSnapshot(collection(db, 'announcements'), (snapshot) => {
         const list: NoticeItem[] = [];
+        let acknowledgedSet = new Set<string>();
+        try {
+          const raw = typeof window !== 'undefined' ? localStorage.getItem('awkum_acknowledged_announcements') : null;
+          if (raw) acknowledgedSet = new Set(JSON.parse(raw));
+        } catch {}
+
         snapshot.forEach((d) => {
           if (d.exists()) {
             const data = d.data();
@@ -729,6 +775,30 @@ export default function App() {
           }
         });
         setNotices(list);
+
+        // Keep announcements in permanent notifications list for bell icon
+        if (list.length > 0) {
+          setNotifications((prev) => {
+            const announcementNotifs: NotificationItem[] = list.map((notice) => ({
+              id: `announcement-${notice.id}`,
+              title: notice.title,
+              category: 'Notices',
+              message: notice.content,
+              timestamp: notice.date || 'Recent',
+              read: acknowledgedSet.has(notice.id),
+              actionTarget: { tab: 'home' },
+            }));
+
+            const nonAnnouncements = prev.filter((n) => !n.id.startsWith('announcement-'));
+            return [...announcementNotifs, ...nonAnnouncements];
+          });
+
+          // Show immediate popup for new unacknowledged announcement
+          const unack = list.find((n) => !acknowledgedSet.has(n.id));
+          if (unack) {
+            setAnnouncementPopup(unack);
+          }
+        }
       }, (err) => {
         console.info('[App] Notices sync notice:', err.message);
       });
@@ -1145,6 +1215,68 @@ export default function App() {
             }
           }}
         />
+
+        {/* Official Campus Notice / Announcement Pop-up Modal */}
+        {announcementPopup && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
+            <div className="bg-[#FFFDF9] border border-[#E6D8C7] rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-2xl bg-[#493222] text-[#FFF9F1] flex items-center justify-center shrink-0 shadow-xs">
+                    <Bell className="w-5 h-5 text-amber-300 animate-pulse" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#806A56] block">
+                      Official University Notice
+                    </span>
+                    <span className="text-xs font-semibold text-[#493222]">
+                      {announcementPopup.department || 'Abdul Wali Khan University Mardan'}
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleAcknowledgeAnnouncement(announcementPopup.id)}
+                  className="p-1.5 text-[#806A56] hover:text-[#38271C] rounded-xl hover:bg-[#EFE3D3] transition-colors cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-4 bg-[#FFF9F1] border border-[#E6D8C7] rounded-2xl space-y-2">
+                <h3 className="text-base font-bold text-[#38271C]">
+                  {announcementPopup.title}
+                </h3>
+                <p className="text-xs text-[#493222] leading-relaxed whitespace-pre-line">
+                  {announcementPopup.content}
+                </p>
+                <div className="pt-2 border-t border-[#E6D8C7] flex items-center justify-between text-[11px] text-[#806A56]">
+                  <span>Date: {announcementPopup.date}</span>
+                  {announcementPopup.urgent && (
+                    <span className="px-2 py-0.5 bg-red-100 text-red-700 font-bold rounded-md text-[10px]">
+                      Urgent Notice
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pt-1">
+                <span className="text-[11px] text-[#806A56]">
+                  Stored in your Bell Notifications for later review.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleAcknowledgeAnnouncement(announcementPopup.id)}
+                  className="px-4 py-2 bg-[#493222] hover:bg-[#38271C] text-[#FFF9F1] rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer active:scale-95"
+                >
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  <span>Acknowledge Notice</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

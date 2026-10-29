@@ -194,3 +194,57 @@ export function subscribeToTeacherIncomingAlerts(
     return () => {};
   }
 }
+
+/**
+ * Triggers an audible university chime alarm and device vibration to alert the incoming teacher
+ */
+export function playTeacherArrivalAlarmAndVibration(): void {
+  // 1. Device Vibration for mobile devices
+  try {
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      navigator.vibrate([400, 200, 400, 200, 600]);
+    }
+  } catch {}
+
+  // 2. Synthesized Alarm Sound via Web Audio API
+  try {
+    const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+
+    const playChimeTone = (freq: number, startOffset: number, duration: number) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + startOffset);
+
+      gain.gain.setValueAtTime(0.001, ctx.currentTime + startOffset);
+      gain.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + startOffset + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + startOffset + duration);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(ctx.currentTime + startOffset);
+      osc.stop(ctx.currentTime + startOffset + duration);
+    };
+
+    // University bell chime sequence
+    playChimeTone(784, 0.0, 0.35);  // G5
+    playChimeTone(988, 0.25, 0.35); // B5
+    playChimeTone(1318, 0.5, 0.6);  // E6
+
+    // Second chime burst after brief pause
+    playChimeTone(784, 0.85, 0.35);
+    playChimeTone(988, 1.1, 0.35);
+    playChimeTone(1318, 1.35, 0.7);
+  } catch (e) {
+    console.info('[Teacher Alert Sound] Web Audio synthesis notice:', e);
+  }
+}
+
